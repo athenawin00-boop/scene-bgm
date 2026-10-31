@@ -1,0 +1,1220 @@
+// Scene BGM — 대화 분위기에 맞춰 유튜브 음악을 골라 틀어주는 실리태번 확장
+// 판단은 따로 지정한 연결 프로필(또는 메인 API)로, 검색은 실리태번 서버 경유(키 없음) 또는 YouTube Data API로.
+
+const MODULE = 'sceneBgm';
+const LOG = '[Scene BGM]';
+const ctx = () => SillyTavern.getContext();
+
+const GENRES = [
+    ['lofi', '로파이', 'lofi'],
+    ['jazz', '재즈', 'jazz'],
+    ['piano', '피아노', 'piano'],
+    ['classical', '클래식', 'classical'],
+    ['orchestral', '오케스트라·OST', 'orchestral soundtrack'],
+    ['ambient', '앰비언트', 'ambient'],
+    ['acoustic', '어쿠스틱', 'acoustic'],
+    ['citypop', '시티팝', 'city pop'],
+    ['synthwave', '신스웨이브', 'synthwave'],
+    ['electronic', '일렉트로닉', 'electronic'],
+    ['rock', '록', 'rock'],
+    ['folk', '포크·켈틱', 'celtic folk'],
+    ['game', '게임 OST', 'video game soundtrack'],
+    ['jpop', 'J-pop', 'j-pop'],
+    ['kpop', 'K-pop', 'k-pop'],
+    ['kindie', 'K-인디', 'korean indie'],
+    ['rnb', 'R&B', 'r&b soul'],
+    ['hiphop', '힙합', 'hip hop'],
+];
+const GENRE_MAP = Object.fromEntries(GENRES.map(([k, ko, en]) => [k, { ko, en }]));
+
+const DEFAULT_GENRE_CONFIG = {
+    genres: ['lofi', 'jazz', 'piano'],
+    customGenres: '',
+    excludes: '',
+    instrumentalOnly: true,
+    strict: false,
+};
+
+const DEFAULTS = {
+    enabled: true,
+    windowOpen: true,
+    mode: 'auto', // auto | suggest | manual
+    profileId: '', // '' = 메인 API
+    maxTokens: 500,
+    contextMessages: 6,
+    minGap: 2,
+    preferShort: true, // 15분 이하 단일 곡 우선
+    searchSource: 'st', // st | api
+    apiKey: '',
+    volume: 60,
+    genre: { ...DEFAULT_GENRE_CONFIG },
+    perChar: {},
+    window: { x: null, y: null, w: 340, h: 560, collapsed: false, tab: 'queue' },
+    history: [],
+    saved: [],
+    blocked: [],
+    lastTrack: null,
+};
+
+const HISTORY_MAX = 100;
+
+// ───────────────────────── 상태 ─────────────────────────
+const state = {
+    current: null, // {id,title,channel,thumb,duration,query,mood,reason}
+    queue: [],
+    queueIndex: -1,
+    queueLabel: '',
+    related: [],
+    relatedFor: null,
+    backStack: [],
+    suggestion: null, // {mood, reason, query, items}
+    aiSinceChange: 0,
+    chatSwitched: false,
+    busy: false,
+    player: null,
+    playerReady: false,
+    pendingId: null,
+    isPlaying: false,
+    errorSkips: 0,
+    cache: new Map(),
+    seeking: false,
+};
+
+function S() {
+    const all = ctx().extensionSettings;
+    if (!all[MODULE]) all[MODULE] = structuredClone(DEFAULTS);
+    const s = all[MODULE];
+    for (const [k, v] of Object.entries(DEFAULTS)) {
+        if (s[k] === undefined) s[k] = structuredClone(v);
+    }
+    for (const [k, v] of Object.entries(DEFAULTS.window)) if (s.window[k] === undefined) s.window[k] = v;
+    for (const [k, v] of Object.entries(DEFAULT_GENRE_CONFIG)) if (s.genre[k] === undefined) s.genre[k] = structuredClone(v);
+    return s;
+}
+const save = () => ctx().saveSettingsDebounced();
+
+// ───────────────────────── 유틸 ─────────────────────────
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ytUrl = (id) => `https://www.youtube.com/watch?v=${id}`;
+const thumbOf = (id) => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+const fmtTime = (sec) => {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+};
+const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
+const textOf = (t) => t?.simpleText ?? t?.content ?? (Array.isArray(t?.runs) ? t.runs.map((r) => r.text).join('') : '') ?? '';
+const notify = (type, msg) => { try { toastr[type](msg, 'Scene BGM', { timeOut: 3500 }); } catch { console.log(LOG, msg); } };
+const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '' });
+
+function currentCharKey() {
+    const c = ctx();
+    if (c.groupId) return `group:${c.groupId}`;
+    const ch = c.characters?.[c.characterId];
+    return ch?.avatar ? `char:${ch.avatar}` : null;
+}
+function charDisplayName() {
+    const c = ctx();
+    if (c.groupId) return c.groups?.find((g) => g.id === c.groupId)?.name || '그룹';
+    return c.characters?.[c.characterId]?.name || '';
+}
+function genreCfg() {
+    const s = S();
+    const key = currentCharKey();
+    if (key && s.perChar[key]) return { cfg: s.perChar[key], perChar: true };
+    return { cfg: s.genre, perChar: false };
+}
+
+// ───────────────────────── 유튜브 검색 ─────────────────────────
+async function visit(url) {
+    const res = await fetch('/api/search/visit', {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ url, html: true }),
+    });
+    if (!res.ok) throw new Error(`실리태번 서버에서 유튜브를 불러오지 못했어요 (${res.status})`);
+    return await res.text();
+}
+
+function extractInitialData(html) {
+    const m = html.match(/(?:var\s+ytInitialData|window\[["']ytInitialData["']\])\s*=\s*(\{.+?\});\s*<\/script>/s);
+    if (!m) return null;
+    try { return JSON.parse(m[1]); } catch { return null; }
+}
+
+function collectVideos(root, excludeId = null) {
+    const out = [];
+    const seen = new Set(excludeId ? [excludeId] : []);
+    const walk = (node, depth) => {
+        if (!node || typeof node !== 'object' || depth > 60) return;
+        if (Array.isArray(node)) { for (const n of node) walk(n, depth + 1); return; }
+        const vr = node.videoRenderer || node.compactVideoRenderer;
+        if (vr?.videoId && !seen.has(vr.videoId)) {
+            seen.add(vr.videoId);
+            out.push({
+                id: vr.videoId,
+                title: textOf(vr.title),
+                channel: textOf(vr.ownerText || vr.longBylineText || vr.shortBylineText),
+                duration: textOf(vr.lengthText),
+                thumb: thumbOf(vr.videoId),
+            });
+        }
+        const lv = node.lockupViewModel;
+        if (lv?.contentId && /VIDEO/.test(lv.contentType || '') && !seen.has(lv.contentId)) {
+            seen.add(lv.contentId);
+            const meta = lv.metadata?.lockupMetadataViewModel;
+            const rows = meta?.metadata?.contentMetadataViewModel?.metadataRows || [];
+            const channel = textOf(rows?.[0]?.metadataParts?.[0]?.text);
+            const durMatch = JSON.stringify(lv.contentImage || {}).match(/"text":"(\d{1,2}:\d{2}(?::\d{2})?)"/);
+            out.push({
+                id: lv.contentId,
+                title: textOf(meta?.title),
+                channel,
+                duration: durMatch?.[1] || '',
+                thumb: thumbOf(lv.contentId),
+            });
+        }
+        for (const k in node) walk(node[k], depth + 1);
+    };
+    walk(root, 0);
+    return out.filter((v) => v.title);
+}
+
+async function searchScrape(query) {
+    const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQAQ%253D%253D`;
+    const html = await visit(url);
+    const data = extractInitialData(html);
+    if (!data) throw new Error('유튜브 검색 결과를 읽지 못했어요');
+    return collectVideos(data);
+}
+
+async function searchApi(query) {
+    const s = S();
+    const u = new URL('https://www.googleapis.com/youtube/v3/search');
+    u.search = new URLSearchParams({
+        part: 'snippet', type: 'video', videoEmbeddable: 'true', maxResults: '12', q: query, key: s.apiKey.trim(),
+    }).toString();
+    const res = await fetch(u);
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const reason = json?.error?.errors?.[0]?.reason || res.status;
+        if (reason === 'quotaExceeded') throw new Error('YouTube API 오늘 할당량을 다 썼어요. 검색 방식을 "실리태번 서버"로 바꿔보세요');
+        throw new Error(`YouTube API 오류: ${json?.error?.message || reason}`);
+    }
+    return (json.items || []).filter((it) => it.id?.videoId).map((it) => ({
+        id: it.id.videoId,
+        title: decodeHtml(it.snippet.title),
+        channel: decodeHtml(it.snippet.channelTitle),
+        duration: '',
+        thumb: it.snippet.thumbnails?.medium?.url || thumbOf(it.id.videoId),
+    }));
+}
+
+async function searchVideos(query) {
+    const s = S();
+    const key = `${s.searchSource}|${query.toLowerCase()}`;
+    const hit = state.cache.get(key);
+    if (hit && Date.now() - hit.t < 30 * 60 * 1000) return hit.items;
+    const items = s.searchSource === 'api' && s.apiKey.trim() ? await searchApi(query) : await searchScrape(query);
+    state.cache.set(key, { t: Date.now(), items });
+    return items;
+}
+
+async function fetchRelated(track) {
+    if (!track) return [];
+    try {
+        const html = await visit(ytUrl(track.id));
+        const data = extractInitialData(html);
+        const secondary = data?.contents?.twoColumnWatchNextResults?.secondaryResults || data;
+        const items = collectVideos(secondary, track.id);
+        if (items.length) return items;
+    } catch (e) {
+        console.warn(LOG, 'related scrape failed', e);
+    }
+    // 실패하면 채널 + 분위기로 검색
+    const q = [track.mood || track.query, track.channel].filter(Boolean).join(' ');
+    return (await searchVideos(q)).filter((v) => v.id !== track.id);
+}
+
+const durSec = (d) => String(d || '').split(':').reduce((a, x) => a * 60 + Number(x || 0), 0);
+
+function filterFresh(items) {
+    const s = S();
+    if (s.preferShort) {
+        const short = items.filter((v) => { const d = durSec(v.duration); return d > 0 && d <= 15 * 60; });
+        const long = items.filter((v) => !short.includes(v));
+        if (short.length) items = [...short, ...long];
+    }
+    const blocked = new Set(s.blocked);
+    const recent = new Set(s.history.slice(0, 8).map((h) => h.id));
+    if (state.current) recent.add(state.current.id);
+    const fresh = items.filter((v) => !blocked.has(v.id) && !recent.has(v.id));
+    return fresh.length ? fresh : items.filter((v) => !blocked.has(v.id));
+}
+
+// ───────────────────────── 장면 판단 ─────────────────────────
+function cleanMes(text) {
+    return String(text || '')
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function genreRules() {
+    const { cfg } = genreCfg();
+    const list = cfg.genres.map((g) => GENRE_MAP[g]?.en).filter(Boolean);
+    const custom = cfg.customGenres.split(',').map((x) => x.trim()).filter(Boolean);
+    const all = [...list, ...custom];
+    const lines = [];
+    if (all.length) {
+        lines.push(cfg.strict
+            ? `Genres: the track MUST be one of: ${all.join(', ')}.`
+            : `Genres: prefer ${all.join(', ')}. Leave them only if the scene clearly demands something else.`);
+    }
+    if (cfg.instrumentalOnly) lines.push('Instrumental only, no vocals (lyrics would distract the reader).');
+    if (cfg.excludes.trim()) lines.push(`Avoid: ${cfg.excludes.trim()}.`);
+    return lines.join('\n');
+}
+
+function buildPrompt(force) {
+    const s = S();
+    const c = ctx();
+    const recent = (c.chat || [])
+        .filter((m) => !m.is_system && m.mes)
+        .slice(-s.contextMessages)
+        .map((m) => `${m.name}: ${cleanMes(m.mes).slice(0, 900)}`)
+        .join('\n\n');
+
+    const system = [
+        'You are the music supervisor for an ongoing interactive story (roleplay chat).',
+        'Read the latest scene and choose background music that fits its mood, setting and pacing.',
+        'Answer with ONLY a JSON object, no other text:',
+        '{"change": true|false, "mood": "2-5 English words", "query": "YouTube search query, 3-7 English words, describe the sound (genre + mood + instrument), no artist names unless essential", "reason": "한국어 한 문장으로 선곡 이유"}',
+        force
+            ? 'You must set "change": true and provide a query.'
+            : 'Set "change": false when the current track still fits. Be conservative: change only on a clear shift of mood, location or tension.',
+    ].join('\n');
+
+    const cur = state.current
+        ? `Currently playing: "${state.current.title}" (chosen for mood: ${state.current.mood || 'unknown'}).`
+        : 'Nothing is playing yet.';
+    const switched = state.chatSwitched ? '\nNote: the user just switched to a different chat/story; the current track was chosen for another story.' : '';
+    const user = [
+        `Story: ${charDisplayName() || 'unknown'}`,
+        genreRules(),
+        cur + switched,
+        '',
+        '### Latest scene',
+        recent || '(empty)',
+        '',
+        'JSON:',
+    ].join('\n');
+    return { system, user };
+}
+
+function parseDecision(text) {
+    const raw = String(text || '');
+    const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
+    if (a !== -1 && b > a) {
+        try {
+            const j = JSON.parse(raw.slice(a, b + 1));
+            if (j && (j.query || j.change === false)) {
+                return { change: j.change !== false, mood: String(j.mood || ''), query: String(j.query || ''), reason: String(j.reason || '') };
+            }
+        } catch { /* fallthrough */ }
+    }
+    const q = raw.match(/"?query"?\s*[:=]\s*"([^"]+)"/i);
+    if (q) return { change: true, mood: '', query: q[1], reason: '' };
+    throw new Error('판단 모델의 답을 읽지 못했어요 (JSON 형식이 아님)');
+}
+
+async function askDirector(force) {
+    const s = S();
+    const c = ctx();
+    const { system, user } = buildPrompt(force);
+    let text = '';
+    if (s.profileId) {
+        const CM = c.ConnectionManagerRequestService;
+        if (!CM) throw new Error('연결 프로필 기능을 쓸 수 없어요 (Connection Manager 꺼짐?)');
+        const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
+        const prompt = CM.constructPrompt(messages, s.profileId);
+        const res = await CM.sendRequest(s.profileId, prompt, Number(s.maxTokens) || 500, {
+            stream: false, extractData: true, includePreset: true, includeInstruct: true,
+        });
+        text = typeof res === 'string' ? res : res?.content;
+    } else {
+        text = await c.generateRaw({ systemPrompt: system, prompt: user, responseLength: Number(s.maxTokens) || 500 });
+    }
+    return parseDecision(text);
+}
+
+function finalizeQuery(q) {
+    const { cfg } = genreCfg();
+    let query = q.trim();
+    if (cfg.instrumentalOnly && !/instrumental|lofi|lo-fi|ambient|piano|orchestral|ost|soundtrack|bgm/i.test(query)) {
+        query += ' instrumental';
+    }
+    return query;
+}
+
+async function runDirector({ force = false, source = 'auto' } = {}) {
+    const s = S();
+    if (state.busy) return;
+    state.busy = true;
+    setStatus('장면 분석 중…', 'busy');
+    renderNow();
+    try {
+        const d = await askDirector(force);
+        if (!d.change && !force) {
+            setStatus(`유지 · ${d.reason || '지금 곡이 장면에 맞아요'}`);
+            state.aiSinceChange = 0;
+            return;
+        }
+        const query = finalizeQuery(d.query);
+        setStatus(`검색 중 · ${query}`, 'busy');
+        const items = filterFresh(await searchVideos(query));
+        if (!items.length) {
+            setStatus(`검색 결과 없음 · ${query}`, 'error');
+            return;
+        }
+        const tagged = items.map((v) => ({ ...v, query, mood: d.mood, reason: d.reason }));
+        state.aiSinceChange = 0;
+        state.chatSwitched = false;
+        if (s.mode === 'suggest' && source !== 'force-play') {
+            state.suggestion = { mood: d.mood, reason: d.reason, query, items: tagged };
+            setStatus(`추천 도착 · ${d.mood || query}`);
+            notify('info', `새 분위기: ${d.mood || query}`);
+        } else {
+            setQueue(tagged, 0, d.mood || query);
+            setStatus(d.reason || d.mood || query);
+        }
+    } catch (e) {
+        console.error(LOG, e);
+        setStatus(e.message || String(e), 'error');
+        if (source !== 'auto') notify('error', e.message || String(e));
+    } finally {
+        state.busy = false;
+        renderAll();
+    }
+}
+
+// ───────────────────────── 플레이어 ─────────────────────────
+let ytApiPromise = null;
+function loadYtApi() {
+    if (window.YT?.Player) return Promise.resolve();
+    if (ytApiPromise) return ytApiPromise;
+    ytApiPromise = new Promise((resolve, reject) => {
+        const prev = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => { try { prev?.(); } catch { /* */ } resolve(); };
+        const sc = document.createElement('script');
+        sc.src = 'https://www.youtube.com/iframe_api';
+        sc.onerror = () => { ytApiPromise = null; reject(new Error('유튜브 플레이어를 불러오지 못했어요 (인터넷 연결 확인)')); };
+        document.head.appendChild(sc);
+    });
+    return ytApiPromise;
+}
+
+async function ensurePlayer(firstId) {
+    if (state.player) return;
+    await loadYtApi();
+    const holder = document.getElementById('sbgm_video');
+    holder.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.id = 'sbgm_iframe';
+    // 실리태번은 no-referrer 정책이라 유튜브 임베드가 오류 153을 낸다 → iframe에만 referrer 허용
+    iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    iframe.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture');
+    iframe.setAttribute('frameborder', '0');
+    const params = new URLSearchParams({
+        enablejsapi: '1', autoplay: '1', playsinline: '1', controls: '0', rel: '0', iv_load_policy: '3', disablekb: '1',
+        origin: location.origin,
+    });
+    iframe.src = `https://www.youtube.com/embed/${firstId}?${params}`;
+    holder.appendChild(iframe);
+    state.pendingId = null;
+    state.player = new YT.Player(iframe, {
+        events: {
+            onReady: () => {
+                state.playerReady = true;
+                state.player.setVolume(S().volume);
+                if (state.pendingId) { state.player.loadVideoById(state.pendingId); state.pendingId = null; } else state.player.playVideo();
+            },
+            onStateChange: (e) => {
+                state.isPlaying = e.data === YT.PlayerState.PLAYING;
+                if (e.data === YT.PlayerState.PLAYING) state.errorSkips = 0;
+                if (e.data === YT.PlayerState.ENDED) next(true);
+                renderControls();
+            },
+            onError: (e) => {
+                console.warn(LOG, 'player error', e.data, state.current?.id);
+                if (state.errorSkips++ < 5) {
+                    setStatus(`재생 불가 영상 건너뜀 (오류 ${e.data})`, 'error');
+                    next(true);
+                } else {
+                    setStatus(`재생이 계속 실패해요 (오류 ${e.data})`, 'error');
+                }
+            },
+        },
+    });
+}
+
+async function playTrack(track, { pushBack = true } = {}) {
+    if (!track) return;
+    const s = S();
+    if (pushBack && state.current && state.current.id !== track.id) {
+        state.backStack.push(state.current);
+        if (state.backStack.length > 50) state.backStack.shift();
+    }
+    state.current = trackLite(track);
+    s.lastTrack = state.current;
+    s.history = [state.current, ...s.history.filter((h) => h.id !== track.id)].slice(0, HISTORY_MAX);
+    state.related = [];
+    state.relatedFor = null;
+    save();
+    renderAll();
+    try {
+        if (!state.player) {
+            await ensurePlayer(track.id);
+        } else if (!state.playerReady) {
+            state.pendingId = track.id;
+        } else {
+            state.player.loadVideoById(track.id);
+        }
+    } catch (e) {
+        setStatus(e.message, 'error');
+        notify('error', e.message);
+    }
+    if (S().window.tab === 'related') loadRelated();
+}
+
+function setQueue(items, index, label) {
+    state.queue = items.map(trackLite);
+    state.queueIndex = index;
+    state.queueLabel = label || '';
+    state.suggestion = null;
+    playTrack(state.queue[index]);
+}
+
+async function next(auto = false) {
+    if (state.queueIndex + 1 < state.queue.length) {
+        state.queueIndex++;
+        return playTrack(state.queue[state.queueIndex]);
+    }
+    // 대기열이 끝나면 비슷한 곡으로 이어가기
+    if (state.current) {
+        try {
+            setStatus('비슷한 곡 찾는 중…', 'busy');
+            const rel = filterFresh(await fetchRelated(state.current));
+            if (rel.length) {
+                const base = state.current;
+                const tagged = rel.map((v) => ({ ...v, query: base.query, mood: base.mood, reason: base.reason }));
+                state.queue = tagged.map(trackLite);
+                state.queueIndex = 0;
+                state.queueLabel = `${base.title} 비슷한 곡`;
+                setStatus(base.reason || base.mood || '');
+                return playTrack(state.queue[0]);
+            }
+        } catch (e) {
+            setStatus(e.message, 'error');
+        }
+    }
+    if (!auto) notify('info', '다음 곡이 없어요');
+}
+
+function prev() {
+    if (state.player && state.playerReady && state.player.getCurrentTime?.() > 5) {
+        state.player.seekTo(0, true);
+        return;
+    }
+    const back = state.backStack.pop();
+    if (!back) { state.player?.seekTo?.(0, true); return; }
+    const qi = state.queue.findIndex((q) => q.id === back.id);
+    if (qi !== -1) state.queueIndex = qi;
+    playTrack(back, { pushBack: false });
+}
+
+function togglePlay() {
+    if (!state.current) {
+        const last = S().lastTrack;
+        if (last) { state.queue = [last]; state.queueIndex = 0; return playTrack(last, { pushBack: false }); }
+        return runDirector({ force: true, source: 'force-play' });
+    }
+    if (!state.player) return playTrack(state.current, { pushBack: false });
+    if (!state.playerReady) return;
+    if (state.isPlaying) state.player.pauseVideo(); else state.player.playVideo();
+}
+
+function pause() {
+    try { if (state.playerReady && state.isPlaying) state.player.pauseVideo(); } catch { /* */ }
+}
+
+function toggleSave(track) {
+    const s = S();
+    const i = s.saved.findIndex((x) => x.id === track.id);
+    if (i === -1) { s.saved.unshift(trackLite(track)); notify('success', '보관함에 담았어요'); } else s.saved.splice(i, 1);
+    save();
+    renderAll();
+}
+
+function blockCurrent() {
+    const s = S();
+    if (!state.current) return;
+    if (!s.blocked.includes(state.current.id)) s.blocked.push(state.current.id);
+    s.blocked = s.blocked.slice(-500);
+    save();
+    notify('info', '이 곡은 다시 고르지 않아요');
+    next();
+}
+
+async function loadRelated() {
+    if (!state.current || state.relatedFor === state.current.id) return;
+    const target = state.current;
+    state.relatedFor = target.id;
+    state.related = null; // 로딩 표시
+    renderList();
+    try {
+        const items = await fetchRelated(target);
+        if (state.current?.id !== target.id) return;
+        state.related = items.map((v) => trackLite({ ...v, query: target.query, mood: target.mood, reason: target.reason }));
+    } catch (e) {
+        state.related = [];
+        state.relatedFor = null;
+        setStatus(e.message, 'error');
+    }
+    renderList();
+}
+
+// ───────────────────────── 창 UI ─────────────────────────
+let $win = null;
+let statusText = '';
+let statusKind = '';
+
+function setStatus(text, kind = '') {
+    statusText = text;
+    statusKind = kind;
+    const el = document.getElementById('sbgm_status');
+    if (el) { el.textContent = text; el.dataset.kind = kind; el.title = text; }
+}
+
+function buildWindow() {
+    const html = `
+<div id="sbgm_window" class="sbgm-window" role="dialog" aria-label="Scene BGM">
+  <div class="sbgm-head" id="sbgm_head">
+    <span class="sbgm-grip fa-solid fa-grip-vertical" aria-hidden="true"></span>
+    <span class="sbgm-brand">Scene BGM</span>
+    <div class="sbgm-mode" id="sbgm_mode" role="group" aria-label="모드">
+      <button data-mode="auto" title="AI 답변마다 분위기를 보고 자동으로 바꿔요">자동</button>
+      <button data-mode="suggest" title="바꿀 때가 되면 후보만 띄워요">추천</button>
+      <button data-mode="manual" title="🔍 버튼을 눌렀을 때만 골라요">수동</button>
+    </div>
+    <button class="sbgm-icon" id="sbgm_power" title="켜기/끄기"><i class="fa-solid fa-power-off"></i></button>
+    <button class="sbgm-icon" id="sbgm_collapse" title="접기/펼치기"><i class="fa-solid fa-minus"></i></button>
+    <button class="sbgm-icon" id="sbgm_close" title="창 닫기 (음악은 계속)"><i class="fa-solid fa-xmark"></i></button>
+  </div>
+
+  <div class="sbgm-now">
+    <div class="sbgm-video" id="sbgm_video"><div class="sbgm-video-empty"><i class="fa-solid fa-music"></i></div></div>
+    <div class="sbgm-meta">
+      <a class="sbgm-title" id="sbgm_title" target="_blank" rel="noopener">아직 재생 중인 곡이 없어요</a>
+      <div class="sbgm-channel" id="sbgm_channel"></div>
+      <div class="sbgm-status" id="sbgm_status"></div>
+    </div>
+  </div>
+
+  <div class="sbgm-suggest" id="sbgm_suggest"></div>
+
+  <div class="sbgm-seek">
+    <span id="sbgm_t_cur">0:00</span>
+    <input type="range" id="sbgm_seek" min="0" max="1000" value="0" aria-label="재생 위치">
+    <span id="sbgm_t_dur">0:00</span>
+  </div>
+
+  <div class="sbgm-controls">
+    <button class="sbgm-icon" id="sbgm_find" title="지금 장면에 맞는 곡 찾기"><i class="fa-solid fa-wand-magic-sparkles"></i></button>
+    <button class="sbgm-icon" id="sbgm_prev" title="이전 곡"><i class="fa-solid fa-backward-step"></i></button>
+    <button class="sbgm-icon sbgm-play" id="sbgm_play" title="재생/일시정지"><i class="fa-solid fa-play"></i></button>
+    <button class="sbgm-icon" id="sbgm_next" title="다음 곡"><i class="fa-solid fa-forward-step"></i></button>
+    <button class="sbgm-icon" id="sbgm_save" title="보관함에 담기"><i class="fa-regular fa-heart"></i></button>
+    <button class="sbgm-icon" id="sbgm_block" title="이 곡 다시 안 듣기"><i class="fa-solid fa-ban"></i></button>
+    <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
+  </div>
+
+  <div class="sbgm-body">
+    <div class="sbgm-genres">
+      <div class="sbgm-genre-head">
+        <span>장르 <small id="sbgm_genre_scope"></small></span>
+        <label class="sbgm-inline"><input type="checkbox" id="sbgm_inst"> 연주곡만</label>
+      </div>
+      <div class="sbgm-chips" id="sbgm_chips"></div>
+    </div>
+
+    <div class="sbgm-tabs" role="tablist">
+      <button data-tab="queue">대기열</button>
+      <button data-tab="related">비슷한 곡</button>
+      <button data-tab="history">기록</button>
+      <button data-tab="saved">보관함</button>
+    </div>
+    <div class="sbgm-list" id="sbgm_list"></div>
+  </div>
+</div>`;
+    $('body').append(html);
+    $win = $('#sbgm_window');
+    bindWindow();
+    applyWindowGeometry();
+}
+
+function applyWindowGeometry() {
+    const s = S();
+    const w = s.window;
+    const el = $win[0];
+    el.classList.toggle('sbgm-collapsed', !!w.collapsed);
+    el.classList.toggle('sbgm-hidden', !s.windowOpen);
+    if (isMobile()) {
+        el.style.left = el.style.width = el.style.height = '';
+        positionMobile();
+        return;
+    }
+    const width = Math.min(Math.max(w.w || 340, 280), window.innerWidth - 16);
+    el.style.width = `${width}px`;
+    el.style.height = w.collapsed ? '' : `${Math.min(Math.max(w.h || 560, 320), window.innerHeight - 16)}px`;
+    const rect = el.getBoundingClientRect();
+    let x = w.x ?? window.innerWidth - width - 16;
+    let y = w.y ?? 64;
+    x = Math.min(Math.max(8, x), window.innerWidth - rect.width - 8);
+    y = Math.min(Math.max(8, y), window.innerHeight - 48);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+}
+
+const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+
+// 모바일에서는 입력창 위에 붙인다. (실리태번이 모바일에서 html에 transform을 걸어 bottom 기준 고정이 안 먹음)
+function positionMobile() {
+    if (!$win || !isMobile()) return;
+    const el = $win[0];
+    const form = document.getElementById('send_form');
+    const formTop = form ? form.getBoundingClientRect().top : window.innerHeight - 56;
+    const top = Math.max(8, formTop - el.offsetHeight - 8);
+    el.style.setProperty('top', `${top}px`, 'important');
+}
+
+function bindWindow() {
+    const el = $win[0];
+    const head = document.getElementById('sbgm_head');
+
+    // 드래그 (PC)
+    let drag = null;
+    head.addEventListener('pointerdown', (e) => {
+        if (isMobile() || e.button !== 0 || e.target.closest('button')) return;
+        const r = el.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
+        head.setPointerCapture(e.pointerId);
+        el.classList.add('sbgm-dragging');
+        e.preventDefault();
+    });
+    head.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const r = el.getBoundingClientRect();
+        const x = Math.min(Math.max(0, e.clientX - drag.dx), window.innerWidth - r.width);
+        const y = Math.min(Math.max(0, e.clientY - drag.dy), window.innerHeight - 40);
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+    });
+    const endDrag = () => {
+        if (!drag) return;
+        drag = null;
+        el.classList.remove('sbgm-dragging');
+        const r = el.getBoundingClientRect();
+        S().window.x = Math.round(r.left);
+        S().window.y = Math.round(r.top);
+        save();
+    };
+    head.addEventListener('pointerup', endDrag);
+    head.addEventListener('pointercancel', endDrag);
+
+    // 크기 조절 저장
+    const ro = new ResizeObserver(() => {
+        if (isMobile() || S().window.collapsed || !S().windowOpen) return;
+        const r = el.getBoundingClientRect();
+        if (r.width < 50) return;
+        S().window.w = Math.round(r.width);
+        S().window.h = Math.round(r.height);
+        save();
+    });
+    ro.observe(el);
+    window.addEventListener('resize', () => applyWindowGeometry());
+
+    $('#sbgm_mode').on('click', 'button', function () {
+        S().mode = this.dataset.mode;
+        if (S().mode !== 'suggest') state.suggestion = null;
+        save();
+        renderAll();
+        syncSettingsPanel();
+    });
+    $('#sbgm_power').on('click', () => setEnabled(!S().enabled));
+    $('#sbgm_collapse').on('click', () => {
+        S().window.collapsed = !S().window.collapsed;
+        save();
+        applyWindowGeometry();
+        renderHead();
+    });
+    $('#sbgm_close').on('click', () => setWindowOpen(false));
+
+    $('#sbgm_play').on('click', togglePlay);
+    $('#sbgm_next').on('click', () => next());
+    $('#sbgm_prev').on('click', prev);
+    $('#sbgm_find').on('click', () => {
+        if (!S().enabled) setEnabled(true);
+        runDirector({ force: true, source: 'manual' });
+    });
+    $('#sbgm_save').on('click', () => state.current && toggleSave(state.current));
+    $('#sbgm_block').on('click', blockCurrent);
+
+    $('#sbgm_vol').on('input', function () {
+        S().volume = Number(this.value);
+        try { state.player?.setVolume?.(S().volume); } catch { /* */ }
+        save();
+    });
+    const seek = document.getElementById('sbgm_seek');
+    seek.addEventListener('pointerdown', () => { state.seeking = true; });
+    seek.addEventListener('change', () => {
+        state.seeking = false;
+        if (!state.playerReady) return;
+        const d = state.player.getDuration?.() || 0;
+        state.player.seekTo((Number(seek.value) / 1000) * d, true);
+    });
+
+    $('#sbgm_chips').on('click', 'button', function () {
+        const { cfg } = genreCfg();
+        const g = this.dataset.genre;
+        cfg.genres = cfg.genres.includes(g) ? cfg.genres.filter((x) => x !== g) : [...cfg.genres, g];
+        save();
+        renderGenres();
+        syncSettingsPanel();
+    });
+    $('#sbgm_inst').on('change', function () {
+        genreCfg().cfg.instrumentalOnly = this.checked;
+        save();
+        syncSettingsPanel();
+    });
+
+    $win.find('.sbgm-tabs').on('click', 'button', function () {
+        S().window.tab = this.dataset.tab;
+        save();
+        renderTabs();
+        renderList();
+        if (this.dataset.tab === 'related') loadRelated();
+    });
+
+    $('#sbgm_list').on('click', '.sbgm-row', function (e) {
+        if (e.target.closest('a, .sbgm-row-act')) return;
+        const tab = S().window.tab;
+        const i = Number(this.dataset.i);
+        const list = listFor(tab);
+        if (!list?.[i]) return;
+        if (tab === 'queue') { state.queueIndex = i; playTrack(state.queue[i]); return; }
+        state.queue = list.map(trackLite);
+        state.queueIndex = i;
+        state.queueLabel = { related: '비슷한 곡', history: '기록', saved: '보관함' }[tab];
+        playTrack(state.queue[i]);
+    });
+    $('#sbgm_list').on('click', '.sbgm-row-act[data-act="save"]', function () {
+        const list = listFor(S().window.tab);
+        const t = list?.[Number($(this).closest('.sbgm-row').data('i'))];
+        if (t) toggleSave(t);
+    });
+    $('#sbgm_list').on('click', '.sbgm-row-act[data-act="remove"]', function () {
+        const s = S();
+        const tab = s.window.tab;
+        const i = Number($(this).closest('.sbgm-row').data('i'));
+        if (tab === 'history') s.history.splice(i, 1);
+        if (tab === 'saved') s.saved.splice(i, 1);
+        save();
+        renderList();
+    });
+
+    $('#sbgm_suggest').on('click', '[data-pick]', function () {
+        const sg = state.suggestion;
+        if (!sg) return;
+        setQueue(sg.items, Number(this.dataset.pick), sg.mood || sg.query);
+        setStatus(sg.reason || sg.mood || sg.query);
+    });
+    $('#sbgm_suggest').on('click', '[data-dismiss]', () => { state.suggestion = null; renderSuggest(); });
+}
+
+function listFor(tab) {
+    const s = S();
+    if (tab === 'queue') return state.queue;
+    if (tab === 'related') return state.related;
+    if (tab === 'history') return s.history;
+    if (tab === 'saved') return s.saved;
+    return [];
+}
+
+function rowHtml(t, i, tab) {
+    const s = S();
+    const savedSet = new Set(s.saved.map((x) => x.id));
+    const isCur = state.current?.id === t.id && (tab !== 'queue' || i === state.queueIndex);
+    const heart = savedSet.has(t.id) ? 'fa-solid' : 'fa-regular';
+    const removable = tab === 'history' || tab === 'saved';
+    return `
+<div class="sbgm-row${isCur ? ' sbgm-cur' : ''}" data-i="${i}" title="${esc(t.title)}">
+  <div class="sbgm-thumb"><img loading="lazy" src="${esc(t.thumb || thumbOf(t.id))}" alt="">${t.duration ? `<span>${esc(t.duration)}</span>` : ''}${isCur ? '<i class="fa-solid fa-volume-high"></i>' : ''}</div>
+  <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc(t.channel || '')}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}</div></div>
+  <div class="sbgm-row-acts">
+    <button class="sbgm-row-act" data-act="save" title="보관함"><i class="${heart} fa-heart"></i></button>
+    <a class="sbgm-row-act" href="${ytUrl(t.id)}" target="_blank" rel="noopener" title="유튜브에서 열기"><i class="fa-brands fa-youtube"></i></a>
+    ${removable ? '<button class="sbgm-row-act" data-act="remove" title="목록에서 지우기"><i class="fa-solid fa-xmark"></i></button>' : ''}
+  </div>
+</div>`;
+}
+
+function renderList() {
+    if (!$win) return;
+    const tab = S().window.tab;
+    const list = listFor(tab);
+    const $l = $('#sbgm_list');
+    if (list === null) { $l.html('<div class="sbgm-empty"><i class="fa-solid fa-spinner fa-spin"></i> 불러오는 중…</div>'); return; }
+    const empty = {
+        queue: '분위기가 정해지면 여기에 곡이 쌓여요',
+        related: state.current ? '비슷한 곡이 없어요' : '곡을 재생하면 비슷한 곡이 보여요',
+        history: '들은 곡이 여기에 남아요',
+        saved: '♡를 눌러 담은 곡이 여기에 모여요',
+    }[tab];
+    const label = tab === 'queue' && state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : '';
+    $l.html(list?.length ? label + list.map((t, i) => rowHtml(t, i, tab)).join('') : `<div class="sbgm-empty">${empty}</div>`);
+}
+
+function renderTabs() {
+    $win.find('.sbgm-tabs button').each(function () {
+        this.classList.toggle('active', this.dataset.tab === S().window.tab);
+    });
+}
+
+function renderGenres() {
+    const { cfg, perChar } = genreCfg();
+    $('#sbgm_chips').html(GENRES.map(([k, ko]) => `<button data-genre="${k}" class="${cfg.genres.includes(k) ? 'on' : ''}">${esc(ko)}</button>`).join('')
+        + (cfg.customGenres.trim() ? cfg.customGenres.split(',').map((x) => x.trim()).filter(Boolean).map((x) => `<span class="sbgm-chip-custom">${esc(x)}</span>`).join('') : ''));
+    $('#sbgm_inst').prop('checked', !!cfg.instrumentalOnly);
+    $('#sbgm_genre_scope').text(perChar ? `· ${charDisplayName()} 전용` : '· 전체 공통');
+}
+
+function renderHead() {
+    const s = S();
+    $win.toggleClass('sbgm-off', !s.enabled);
+    $('#sbgm_power').toggleClass('on', s.enabled).attr('title', s.enabled ? '끄기 (음악 정지 + 판단 중지)' : '켜기');
+    $('#sbgm_mode button').each(function () { this.classList.toggle('active', this.dataset.mode === s.mode); });
+    $('#sbgm_collapse i').attr('class', `fa-solid ${s.window.collapsed ? 'fa-up-right-and-down-left-from-center' : 'fa-minus'}`);
+}
+
+function renderNow() {
+    const t = state.current || S().lastTrack;
+    const $title = $('#sbgm_title');
+    if (t) {
+        $title.text(t.title).attr('href', ytUrl(t.id)).attr('title', `${t.title}\n유튜브에서 열기`);
+        $('#sbgm_channel').text(t.channel || '');
+        if (!state.player) {
+            $('#sbgm_video').html(`<div class="sbgm-video-empty" style="background-image:url('${esc(t.thumb || thumbOf(t.id))}')"><i class="fa-solid fa-play"></i></div>`);
+        }
+    } else {
+        $title.text('아직 재생 중인 곡이 없어요').removeAttr('href');
+        $('#sbgm_channel').text(S().enabled ? '대화가 이어지면 분위기에 맞춰 골라요' : '꺼져 있어요');
+    }
+    $win.toggleClass('sbgm-busy', state.busy);
+    setStatus(statusText, statusKind);
+}
+
+function renderSuggest() {
+    const sg = state.suggestion;
+    const $s = $('#sbgm_suggest');
+    if (!sg) { $s.empty().hide(); return; }
+    $s.html(`
+<div class="sbgm-suggest-head"><i class="fa-solid fa-lightbulb"></i> <b>${esc(sg.mood || '새 분위기')}</b><button data-dismiss title="무시"><i class="fa-solid fa-xmark"></i></button></div>
+${sg.reason ? `<div class="sbgm-suggest-reason">${esc(sg.reason)}</div>` : ''}
+<div class="sbgm-suggest-items">${sg.items.slice(0, 3).map((t, i) => `
+  <button data-pick="${i}" title="${esc(t.title)}"><img src="${esc(t.thumb)}" alt=""><span>${esc(t.title)}</span></button>`).join('')}
+</div>`).show();
+}
+
+function renderControls() {
+    $('#sbgm_play i').attr('class', `fa-solid ${state.isPlaying ? 'fa-pause' : 'fa-play'}`);
+    const saved = state.current && S().saved.some((x) => x.id === state.current.id);
+    $('#sbgm_save i').attr('class', `${saved ? 'fa-solid' : 'fa-regular'} fa-heart`);
+    $('#sbgm_vol').val(S().volume);
+}
+
+function renderAll() {
+    if (!$win) return;
+    renderHead();
+    renderNow();
+    renderSuggest();
+    renderControls();
+    renderGenres();
+    renderTabs();
+    renderList();
+    positionMobile();
+}
+
+function tick() {
+    if (!state.playerReady || !S().windowOpen) return;
+    try {
+        const cur = state.player.getCurrentTime() || 0;
+        const dur = state.player.getDuration() || 0;
+        $('#sbgm_t_cur').text(fmtTime(cur));
+        $('#sbgm_t_dur').text(dur ? fmtTime(dur) : 'LIVE');
+        if (!state.seeking) $('#sbgm_seek').val(dur ? Math.round((cur / dur) * 1000) : 0);
+    } catch { /* */ }
+}
+
+function setEnabled(on) {
+    S().enabled = on;
+    if (!on) { pause(); state.suggestion = null; setStatus('꺼짐'); } else setStatus('켜짐');
+    save();
+    renderAll();
+    syncSettingsPanel();
+}
+
+function setWindowOpen(open) {
+    S().windowOpen = open;
+    save();
+    applyWindowGeometry();
+    $('#sbgm_wand_label').text(open ? 'Scene BGM 창 닫기' : 'Scene BGM 창 열기');
+    syncSettingsPanel();
+}
+
+// ───────────────────────── 설정 패널 ─────────────────────────
+function buildSettingsPanel() {
+    const html = `
+<div class="sbgm-settings">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b><i class="fa-solid fa-music"></i> Scene BGM</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_enabled"> 사용하기</label>
+      <div class="sbgm-s-row">
+        <div class="menu_button" id="sbgm_s_toggle_window"><i class="fa-solid fa-window-restore"></i> 플레이어 창 열기/닫기</div>
+        <div class="menu_button" id="sbgm_s_reset_window"><i class="fa-solid fa-arrows-to-dot"></i> 창 위치 초기화</div>
+      </div>
+
+      <h4>판단</h4>
+      <label for="sbgm_s_profile">판단에 쓸 연결 프로필</label>
+      <select id="sbgm_s_profile" class="text_pole"></select>
+      <small class="sbgm-note">메인 롤플 모델과 따로, 싸고 빠른 모델 프로필을 고르는 걸 추천해요. "메인 API"는 지금 연결된 모델을 써요.</small>
+      <label for="sbgm_s_mode">모드</label>
+      <select id="sbgm_s_mode" class="text_pole">
+        <option value="auto">자동 — 분위기가 바뀌면 바로 교체</option>
+        <option value="suggest">추천 — 후보만 띄우고 내가 고름</option>
+        <option value="manual">수동 — 버튼 눌렀을 때만</option>
+      </select>
+      <div class="sbgm-s-grid">
+        <label>읽을 최근 메시지 수 <input type="number" class="text_pole" id="sbgm_s_ctx" min="1" max="30"></label>
+        <label>최소 간격 (AI 답변 수) <input type="number" class="text_pole" id="sbgm_s_gap" min="1" max="50"></label>
+        <label>판단 최대 토큰 <input type="number" class="text_pole" id="sbgm_s_tokens" min="100" max="8000" step="50"></label>
+      </div>
+      <small class="sbgm-note">추론(thinking) 모델은 토큰을 많이 써서 답이 비어 올 수 있어요. 그럴 땐 최대 토큰을 1500 이상으로.</small>
+
+      <h4>장르</h4>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_perchar"> <span id="sbgm_s_perchar_label">이 캐릭터만 장르 따로 저장</span></label>
+      <div class="sbgm-s-genres" id="sbgm_s_genres"></div>
+      <label for="sbgm_s_custom">직접 추가 (쉼표로 구분, 영어 추천)</label>
+      <input type="text" class="text_pole" id="sbgm_s_custom" placeholder="dark academia, medieval tavern">
+      <label for="sbgm_s_excl">피할 것</label>
+      <input type="text" class="text_pole" id="sbgm_s_excl" placeholder="EDM, heavy metal, 동요">
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_inst"> 연주곡만 (가사 없는 곡)</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_strict"> 장르 고정 (장면이 달라도 안 벗어남)</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_short"> 한 곡짜리 우선 (몇 시간짜리 모음 영상은 뒤로)</label>
+
+      <h4>유튜브 검색</h4>
+      <select id="sbgm_s_source" class="text_pole">
+        <option value="st">실리태번 서버 경유 (키 필요 없음)</option>
+        <option value="api">YouTube Data API 키 사용</option>
+      </select>
+      <input type="password" class="text_pole" id="sbgm_s_key" placeholder="YouTube Data API 키 (AIza…)" autocomplete="off">
+      <small class="sbgm-note" id="sbgm_s_source_note"></small>
+
+      <h4>기록</h4>
+      <div class="sbgm-s-row">
+        <div class="menu_button" id="sbgm_s_clear_hist"><i class="fa-solid fa-clock-rotate-left"></i> 기록 비우기</div>
+        <div class="menu_button" id="sbgm_s_clear_block"><i class="fa-solid fa-ban"></i> 안 듣기 목록 비우기 (<span id="sbgm_s_block_n">0</span>)</div>
+      </div>
+    </div>
+  </div>
+</div>`;
+    $('#extensions_settings2').append(html);
+
+    $('#sbgm_s_enabled').on('change', function () { setEnabled(this.checked); });
+    $('#sbgm_s_toggle_window').on('click', () => setWindowOpen(!S().windowOpen));
+    $('#sbgm_s_reset_window').on('click', () => {
+        Object.assign(S().window, { x: null, y: null, w: 340, h: 560, collapsed: false });
+        save();
+        setWindowOpen(true);
+        renderHead();
+    });
+    $('#sbgm_s_profile').on('focus mousedown', fillProfiles).on('change', function () { S().profileId = this.value; save(); });
+    $('#sbgm_s_mode').on('change', function () { S().mode = this.value; state.suggestion = null; save(); renderAll(); });
+    $('#sbgm_s_ctx').on('change', function () { S().contextMessages = clampNum(this.value, 1, 30, 6); save(); });
+    $('#sbgm_s_gap').on('change', function () { S().minGap = clampNum(this.value, 1, 50, 2); save(); });
+    $('#sbgm_s_tokens').on('change', function () { S().maxTokens = clampNum(this.value, 100, 8000, 500); save(); });
+
+    $('#sbgm_s_perchar').on('change', function () {
+        const s = S();
+        const key = currentCharKey();
+        if (!key) { this.checked = false; notify('warning', '캐릭터 채팅을 먼저 열어주세요'); return; }
+        if (this.checked) s.perChar[key] = structuredClone(s.genre);
+        else delete s.perChar[key];
+        save();
+        renderGenres();
+        syncSettingsPanel();
+    });
+    $('#sbgm_s_genres').on('change', 'input', function () {
+        const { cfg } = genreCfg();
+        const g = this.dataset.genre;
+        cfg.genres = this.checked ? [...new Set([...cfg.genres, g])] : cfg.genres.filter((x) => x !== g);
+        save();
+        renderGenres();
+    });
+    $('#sbgm_s_custom').on('input', function () { genreCfg().cfg.customGenres = this.value; save(); renderGenres(); });
+    $('#sbgm_s_excl').on('input', function () { genreCfg().cfg.excludes = this.value; save(); });
+    $('#sbgm_s_inst').on('change', function () { genreCfg().cfg.instrumentalOnly = this.checked; save(); renderGenres(); });
+    $('#sbgm_s_strict').on('change', function () { genreCfg().cfg.strict = this.checked; save(); });
+    $('#sbgm_s_short').on('change', function () { S().preferShort = this.checked; state.cache.clear(); save(); });
+
+    $('#sbgm_s_source').on('change', function () { S().searchSource = this.value; save(); syncSettingsPanel(); });
+    $('#sbgm_s_key').on('input', function () { S().apiKey = this.value.trim(); save(); });
+
+    $('#sbgm_s_clear_hist').on('click', () => { S().history = []; state.backStack = []; save(); renderList(); notify('success', '기록을 비웠어요'); });
+    $('#sbgm_s_clear_block').on('click', () => { S().blocked = []; save(); syncSettingsPanel(); });
+
+    fillProfiles();
+    syncSettingsPanel();
+}
+
+const clampNum = (v, min, max, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : d; };
+
+function fillProfiles() {
+    const s = S();
+    const c = ctx();
+    const $sel = $('#sbgm_s_profile');
+    let profiles = [];
+    try {
+        const CM = c.ConnectionManagerRequestService;
+        profiles = CM ? CM.getSupportedProfiles() : [];
+    } catch {
+        profiles = [];
+    }
+    const opts = ['<option value="">메인 API (현재 연결)</option>']
+        .concat(profiles.slice().sort((a, b) => a.name.localeCompare(b.name)).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`));
+    if (s.profileId && !profiles.some((p) => p.id === s.profileId)) opts.push(`<option value="${esc(s.profileId)}">(삭제된 프로필)</option>`);
+    $sel.html(opts.join(''));
+    $sel.val(s.profileId);
+}
+
+function syncSettingsPanel() {
+    if (!$('#sbgm_s_enabled').length) return;
+    const s = S();
+    const { cfg, perChar } = genreCfg();
+    $('#sbgm_s_enabled').prop('checked', s.enabled);
+    $('#sbgm_s_mode').val(s.mode);
+    $('#sbgm_s_ctx').val(s.contextMessages);
+    $('#sbgm_s_gap').val(s.minGap);
+    $('#sbgm_s_tokens').val(s.maxTokens);
+    $('#sbgm_s_perchar').prop('checked', perChar);
+    const name = charDisplayName();
+    $('#sbgm_s_perchar_label').text(name ? `"${name}"만 장르 따로 저장` : '이 캐릭터만 장르 따로 저장');
+    $('#sbgm_s_genres').html(GENRES.map(([k, ko]) => `<label class="checkbox_label"><input type="checkbox" data-genre="${k}" ${cfg.genres.includes(k) ? 'checked' : ''}> ${esc(ko)}</label>`).join(''));
+    if (document.activeElement?.id !== 'sbgm_s_custom') $('#sbgm_s_custom').val(cfg.customGenres);
+    if (document.activeElement?.id !== 'sbgm_s_excl') $('#sbgm_s_excl').val(cfg.excludes);
+    $('#sbgm_s_inst').prop('checked', cfg.instrumentalOnly);
+    $('#sbgm_s_strict').prop('checked', cfg.strict);
+    $('#sbgm_s_short').prop('checked', s.preferShort);
+    $('#sbgm_s_source').val(s.searchSource);
+    $('#sbgm_s_key').val(s.apiKey).toggle(s.searchSource === 'api');
+    $('#sbgm_s_source_note').html(s.searchSource === 'api'
+        ? '검색 1번에 100유닛, 하루 기본 10,000유닛(약 100번). 키는 Google Cloud Console에서 "YouTube Data API v3"를 켜고 만들어요.'
+        : '실리태번 서버가 유튜브 검색 페이지를 대신 열어 읽어요. 키도 할당량도 없지만, 유튜브 페이지 구조가 바뀌면 고장날 수 있어요.');
+    $('#sbgm_s_block_n').text(s.blocked.length);
+}
+
+// ───────────────────────── 이벤트 ─────────────────────────
+function onAiMessage(messageId) {
+    const s = S();
+    if (!s.enabled) return;
+    const msg = ctx().chat?.[messageId];
+    if (!msg || msg.is_user || msg.is_system) return;
+    state.aiSinceChange++;
+    if (s.mode === 'manual') return;
+    if (state.current && state.aiSinceChange < s.minGap && !state.chatSwitched) return;
+    runDirector({ force: !state.current, source: 'auto' });
+}
+
+function onChatChanged() {
+    state.chatSwitched = !!state.current;
+    state.aiSinceChange = S().minGap;
+    state.suggestion = null;
+    renderAll();
+    syncSettingsPanel();
+}
+
+function addWandButton() {
+    const html = `
+<div id="sbgm_wand_container" class="extension_container">
+  <div id="sbgm_wand" class="list-group-item flex-container flexGap5 interactable" tabindex="0" role="button">
+    <div class="fa-solid fa-music extensionsMenuExtensionButton"></div>
+    <span id="sbgm_wand_label">${S().windowOpen ? 'Scene BGM 창 닫기' : 'Scene BGM 창 열기'}</span>
+  </div>
+</div>`;
+    $('#extensionsMenu').append(html);
+    $('#sbgm_wand').on('click', () => setWindowOpen(!S().windowOpen));
+}
+
+function registerSlash() {
+    const c = ctx();
+    try {
+        const { SlashCommandParser, SlashCommand } = c;
+        if (!SlashCommandParser?.addCommandObject || !SlashCommand?.fromProps) return;
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: 'bgm',
+            callback: async (_args, value) => {
+                const v = String(value || '').trim();
+                if (!v || v === 'find') runDirector({ force: true, source: 'manual' });
+                else if (v === 'next') next();
+                else if (v === 'prev') prev();
+                else if (v === 'toggle') togglePlay();
+                else if (v === 'on') setEnabled(true);
+                else if (v === 'off') setEnabled(false);
+                else if (v === 'window') setWindowOpen(!S().windowOpen);
+                else {
+                    const items = await searchVideos(v);
+                    if (items.length) setQueue(items.map((x) => ({ ...x, query: v, mood: v })), 0, v);
+                }
+                return '';
+            },
+            helpString: 'Scene BGM: /bgm (장면으로 찾기), /bgm next|prev|toggle|on|off|window, /bgm 검색어 (직접 검색해 재생)',
+        }));
+    } catch (e) {
+        console.warn(LOG, 'slash command registration failed', e);
+    }
+}
+
+jQuery(async () => {
+    try {
+        S();
+        buildWindow();
+        buildSettingsPanel();
+        addWandButton();
+        registerSlash();
+        const c = ctx();
+        const ev = c.eventTypes || c.event_types;
+        c.eventSource.on(ev.MESSAGE_RECEIVED, onAiMessage);
+        c.eventSource.on(ev.CHAT_CHANGED, onChatChanged);
+        if (ev.CONNECTION_PROFILE_LOADED) c.eventSource.on(ev.CONNECTION_PROFILE_LOADED, fillProfiles);
+        setInterval(tick, 500);
+        renderAll();
+        console.log(LOG, 'loaded');
+    } catch (e) {
+        console.error(LOG, 'init failed', e);
+    }
+});

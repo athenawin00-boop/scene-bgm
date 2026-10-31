@@ -1,0 +1,12 @@
+{
+    "display_name": "Scene BGM",
+    "loading_order": 100,
+    "requires": [],
+    "optional": ["connection-manager"],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "palebluedot",
+    "version": "0.1.0",
+    "homePage": "",
+    "auto_update": false
+}
