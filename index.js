@@ -70,6 +70,7 @@ const DEFAULTS = {
     avoidFree: true, // '무료 BGM / 저작권 없음' 영상 뒤로
     embedOk: {}, // 영상 id → 외부 재생 가능 여부 캐시
     blockedPlay: 'youtube', // 실리태번 안에서 막힌 곡: skip | youtube(유튜브 창으로 넘기기)
+    tryAlternates: true, // 막히면 같은 곡의 다른 업로드(Topic 음원·공식 오디오·가사 영상) 먼저 시도
     allowFranchise: false, // 캐릭터 원작 테마곡·OST 허용
     avoidAi: true, // AI 생성 음악 거르기
     aiVideo: {}, // 영상 id → AI 표시 여부 캐시
@@ -105,6 +106,7 @@ const state = {
     lastDecision: null, // {result, mood, query, reason, thinking, at, source}
     whyOpen: false,
     skipped: {}, // 이번 판단에서 건너뛴 수 { embed, ai }
+    altTry: null, // { orig, list, i } 같은 곡 다른 영상 시도 중
     external: null, // { at, count } 유튜브 창으로 넘긴 상태 (창은 실리태번 보안 설정 때문에 조종 불가)
     extPending: null, // 막혀서 유튜브 창으로 넘길지 묻는 중인 곡 { ...track, mobile? }
     extReady: null, // 유튜브 창으로 듣는 중에 새로 고른 곡들 { items, label }
@@ -166,7 +168,7 @@ function fmtViews(n) {
 const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
 const textOf = (t) => t?.simpleText ?? t?.content ?? (Array.isArray(t?.runs) ? t.runs.map((r) => r.text).join('') : '') ?? '';
 const notify = (type, msg) => { try { toastr[type](msg, 'Scene BGM', { timeOut: 3500 }); } catch { console.log(LOG, msg); } };
-const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', views: t.views ?? null, thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '' });
+const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', views: t.views ?? null, thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '', songArtist: t.songArtist || t.song?.artist || '', songTitle: t.songTitle || t.song?.title || '' });
 
 function currentCharKey() {
     const c = ctx();
@@ -397,7 +399,7 @@ async function resolveSongs(songs) {
             const all = (await searchVideos(q)).filter((v) => !blocked.has(v.id));
             const usable = (v) => embedUsable(v.id) && !(S().avoidAi && S().aiVideo[v.id] === true) && !channelBlocked(v);
             const v = pickBestForSong(song, all.filter(usable));
-            if (v) return { ...v, song };
+            if (v) return { ...v, song, songArtist: song.artist, songTitle: song.title };
             // 왜 못 썼는지 표시용
             const raw = pickBestForSong(song, all);
             if (raw) song.skip = S().embedOk[raw.id] === false ? '외부 재생 막힘' : 'AI 생성 곡이라 건너뜀';
@@ -694,7 +696,7 @@ async function ensurePlayer(firstId) {
             },
             onStateChange: (e) => {
                 state.isPlaying = e.data === YT.PlayerState.PLAYING;
-                if (e.data === YT.PlayerState.PLAYING) state.errorSkips = 0;
+                if (e.data === YT.PlayerState.PLAYING) { state.errorSkips = 0; if (state.altTry) confirmAlt(); }
                 if (e.data === YT.PlayerState.ENDED) next(true);
                 renderControls();
             },
@@ -702,8 +704,14 @@ async function ensurePlayer(firstId) {
                 console.warn(LOG, 'player error', e.data, state.current?.id);
                 const blockedErr = [101, 150, 153].includes(e.data);
                 if (state.current && blockedErr) rememberEmbed(state.current.id, false);
-                if (state.current && blockedErr && popupMode()) {
-                    playExternal(state.current, { recorded: true });
+                if (state.altTry && blockedErr) {
+                    // 대체 영상도 막힘 → 다음 후보
+                    state.altTry.i++;
+                    if (state.altTry.i < state.altTry.list.length) playAlt(); else blockedFallback(state.altTry.orig);
+                    return;
+                }
+                if (state.current && blockedErr && (S().tryAlternates || popupMode())) {
+                    tryAlternates(state.current);
                     return;
                 }
                 if (blockedErr && isMobile() && S().blockedPlay !== 'skip' && state.current) {
@@ -722,17 +730,20 @@ async function ensurePlayer(firstId) {
     });
 }
 
-async function playTrack(track, { pushBack = true } = {}) {
+async function playTrack(track, { pushBack = true, alt = false } = {}) {
     if (!track) return;
     const s = S();
-    if (pushBack && state.current && state.current.id !== track.id) {
+    if (!alt) state.altTry = null;
+    if (pushBack && !alt && state.current && state.current.id !== track.id) {
         state.backStack.push(state.current);
         if (state.backStack.length > 50) state.backStack.shift();
     }
     stopExternal();
     state.current = trackLite(track);
-    s.lastTrack = state.current;
-    s.history = [state.current, ...s.history.filter((h) => h.id !== track.id)].slice(0, HISTORY_MAX);
+    if (!alt) {
+        s.lastTrack = state.current;
+        s.history = [state.current, ...s.history.filter((h) => h.id !== track.id)].slice(0, HISTORY_MAX);
+    }
     state.related = [];
     state.relatedFor = null;
     save();
@@ -750,6 +761,106 @@ async function playTrack(track, { pushBack = true } = {}) {
         notify('error', e.message);
     }
     if (S().window.tab === 'related') loadRelated();
+}
+
+// ───────── 막힌 곡: 같은 곡의 다른 업로드부터 시도 ─────────
+// 뮤직비디오는 막혀도 'Topic' 음원이나 공식 오디오, 가사 영상은 열려 있을 때가 있음
+function songOf(t) {
+    if (t.songTitle) return { artist: t.songArtist || '', title: t.songTitle };
+    let title = String(t.title || '')
+        .replace(/\[[^\]]*\]/g, ' ')
+        .replace(/\((?:[^)]*?)(official|mv|m\/v|video|audio|lyric|가사|live|ver\.?|version|teaser)(?:[^)]*)\)/gi, ' ')
+        .replace(/official\s*(music\s*)?(video|audio|m\/?v)|\bM\/V\b|\bMV\b/gi, ' ')
+        .replace(/\s+/g, ' ').trim();
+    let artist = String(t.channel || '').replace(/\s*-\s*topic$/i, '').replace(/\b(official|vevo|records?|entertainment|ent\.?)\b|공식/gi, '').trim();
+    const m = title.match(/^(.+?)\s+[-–_]\s+(.+)$/);
+    const q = title.match(/^(.+?)\s*['‘"“](.+?)['’"”]\s*$/); // BTS (방탄소년단) 'Dynamite'
+    if (m) { artist = m[1].trim(); title = m[2].trim(); } else if (q) { artist = q[1].trim(); title = q[2].trim(); }
+    return { artist, title };
+}
+
+function altScore(song, v, origId) {
+    if (v.id === origId) return null;
+    const s = S();
+    if (s.embedOk[v.id] === false || (s.avoidAi && s.aiVideo[v.id]) || channelBlocked(v) || isFree(v)) return null;
+    const t = norm(song.title), a = norm(song.artist), vt = norm(v.title), vc = norm(v.channel);
+    const titleOk = t && (vt.includes(t) || t.split(' ').filter((w) => w.length > 1 && vt.includes(w)).length >= Math.ceil(t.split(' ').length * 0.7));
+    if (!titleOk) return null;
+    const topic = / topic$/.test(vc);
+    const artistHit = a && (vt.includes(a) || vc.includes(a) || a.split(' ').filter((w) => w.length > 2).some((w) => vc.includes(w)));
+    if (a && !artistHit && !topic) return null;
+    if (/cover|커버|karaoke|노래방|reaction|리액션|tutorial|sheet|\bhour|시간|loop|remix|sped up|slowed|8d|nightcore|instrumental ver|piano ver/.test(vt)) return null;
+    const d = durSec(v.duration);
+    if (d > 15 * 60) return null;
+    let sc = 0;
+    if (topic) sc += 6;
+    if (/official audio|audio\b|음원/.test(vt)) sc += 4;
+    if (/lyric|가사/.test(vt)) sc += 3;
+    if (/live|라이브|concert|콘서트|fancam|직캠/.test(vt)) sc -= 3;
+    return sc;
+}
+
+async function findAlternates(t) {
+    const song = songOf(t);
+    const q = [song.artist, song.title].filter(Boolean).join(' ');
+    if (!q) return [];
+    const lists = await Promise.all([q, `${q} official audio`, `${q} lyrics`].map((x) => searchVideos(x).catch(() => [])));
+    const seen = new Set();
+    const scored = [];
+    for (const v of lists.flat()) {
+        if (seen.has(v.id)) continue;
+        seen.add(v.id);
+        const sc = altScore(song, v, t.id);
+        if (sc !== null) scored.push({ v, sc });
+    }
+    return scored.sort((x, y) => y.sc - x.sc).slice(0, 4).map((x) => x.v);
+}
+
+async function tryAlternates(orig) {
+    state.altTry = null;
+    if (!S().tryAlternates) return blockedFallback(orig);
+    setStatus('같은 곡을 다른 영상으로 찾는 중…', 'busy');
+    let list = [];
+    try { list = await findAlternates(orig); } catch (e) { console.warn(LOG, 'alternates failed', e); }
+    if (state.current && state.current.id !== orig.id) return; // 그사이 다른 곡으로 넘어감
+    if (!list.length) return blockedFallback(orig);
+    state.altTry = { orig: trackLite(orig), list, i: 0 };
+    playAlt();
+}
+
+function playAlt() {
+    const a = state.altTry;
+    const o = a.orig;
+    const cand = { ...a.list[a.i], query: o.query, mood: o.mood, reason: o.reason, songArtist: o.songArtist, songTitle: o.songTitle };
+    console.log(LOG, `alternate ${a.i + 1}/${a.list.length}`, cand.title, cand.channel);
+    setStatus(`다른 영상으로 시도 중 (${a.i + 1}/${a.list.length})`, 'busy');
+    playTrack(cand, { alt: true });
+}
+
+// 대체 영상도 없거나 다 막혔을 때: 설정대로 유튜브 창 / 건너뛰기
+function blockedFallback(orig) {
+    state.altTry = null;
+    state.current = trackLite(orig);
+    setStatus(orig.reason || orig.mood || '');
+    if (popupMode()) { playExternal(orig, { recorded: true }); return; }
+    if (isMobile() && S().blockedPlay !== 'skip') { state.extPending = { ...trackLite(orig), mobile: true }; renderExternal(); }
+    state.skipped.embed = (state.skipped.embed || 0) + 1;
+    next(true);
+}
+
+// 대체 영상이 실제로 재생되면 확정: 대기열 자리 교체 + 기록
+function confirmAlt() {
+    const a = state.altTry;
+    if (!a) return;
+    state.altTry = null;
+    const s = S();
+    const cur = state.current;
+    if (state.queue[state.queueIndex]?.id === a.orig.id) state.queue[state.queueIndex] = cur;
+    s.lastTrack = cur;
+    s.history = [cur, ...s.history.filter((h) => h.id !== cur.id && h.id !== a.orig.id)].slice(0, HISTORY_MAX);
+    save();
+    setStatus(a.orig.reason || a.orig.mood || '');
+    renderAll();
 }
 
 // ───────── 실리태번 안에서 막힌 곡: 유튜브 창으로 넘기기 ─────────
@@ -886,9 +997,12 @@ async function playFromQueue(index) {
         const t = state.queue[i];
         const { ok, why } = await inspectVideo(t.id, t.channel);
         if (seq !== playSeq) return true; // 그사이 다른 곡을 눌렀음
-        if (!ok && why === 'embed' && popupMode()) {
+        if (!ok && why === 'embed' && (S().tryAlternates || popupMode())) {
             state.queueIndex = i;
-            playExternal(t);
+            if (state.current) state.backStack.push(state.current);
+            state.current = trackLite(t);
+            renderAll();
+            tryAlternates(t);
             return true;
         }
         if (!ok) {
@@ -1704,7 +1818,8 @@ function buildSettingsPanel() {
         <option value="mood">분위기 검색 — 분위기 검색어로 찾아요 (BGM 모음 위주)</option>
       </select>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_free"> '무료 BGM·저작권 없음' 영상은 뒤로</label>
-      <label for="sbgm_s_blocked">실리태번 안에서 재생이 막힌 곡</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_alt"> 막힌 곡은 같은 곡의 다른 영상(Topic 음원·공식 오디오·가사 영상)부터 시도</label>
+      <label for="sbgm_s_blocked">그래도 막혔을 때</label>
       <select id="sbgm_s_blocked" class="text_pole">
         <option value="youtube">물어보고 유튜브 창으로 넘기기</option>
         <option value="skip">건너뛰기</option>
@@ -1782,6 +1897,7 @@ function buildSettingsPanel() {
     $('#sbgm_s_ai').on('change', function () { S().avoidAi = this.checked; save(); });
     $('#sbgm_s_franchise').on('change', function () { S().allowFranchise = this.checked; save(); });
     $('#sbgm_s_blocked').on('change', function () { S().blockedPlay = this.value; save(); });
+    $('#sbgm_s_alt').on('change', function () { S().tryAlternates = this.checked; save(); });
     $('#sbgm_s_clear_ai').on('click', () => { S().aiChannels = []; S().aiVideo = {}; save(); syncSettingsPanel(); });
     $('#sbgm_s_clear_ch').on('click', () => { S().blockedChannels = []; save(); syncSettingsPanel(); });
 
@@ -1840,6 +1956,7 @@ function syncSettingsPanel() {
     $('#sbgm_s_ai').prop('checked', s.avoidAi);
     $('#sbgm_s_franchise').prop('checked', s.allowFranchise);
     $('#sbgm_s_blocked').val(s.blockedPlay);
+    $('#sbgm_s_alt').prop('checked', s.tryAlternates);
     $('#sbgm_s_ai_n').text(s.aiChannels.length);
     $('#sbgm_s_ch_n').text(s.blockedChannels.length);
     $('#sbgm_s_source').val(s.searchSource);
