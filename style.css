@@ -61,17 +61,30 @@
     padding: 2px;
     gap: 1px;
 }
-.sbgm-mode button {
+/* 테마가 button / .active / :focus 에 색을 강제해도 영향을 받지 않도록 id로 고정 */
+#sbgm_window .sbgm-mode button,
+#sbgm_window .sbgm-mode button:hover,
+#sbgm_window .sbgm-mode button:focus,
+#sbgm_window .sbgm-mode button:active {
     padding: 2px 8px;
     border-radius: 999px;
     font-size: 11.5px;
-    color: var(--sbgm-dim);
+    color: var(--sbgm-dim) !important;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    box-shadow: none !important;
+    outline: none;
 }
-.sbgm-mode button.active {
-    background: var(--sbgm-fg) !important;
-    color: var(--sbgm-solid-bg) !important;
+#sbgm_window .sbgm-mode button.sbgm-sel,
+#sbgm_window .sbgm-mode button.sbgm-sel:hover,
+#sbgm_window .sbgm-mode button.sbgm-sel:focus,
+#sbgm_window .sbgm-mode button.sbgm-sel:active {
+    color: var(--sbgm-fg) !important;
+    background: color-mix(in srgb, var(--sbgm-accent) 20%, transparent) !important;
+    border-color: var(--sbgm-accent) !important;
     font-weight: 700;
 }
+#sbgm_window .sbgm-mode button:focus-visible { outline: 2px solid var(--sbgm-accent); outline-offset: 1px; }
 .sbgm-icon {
     width: 28px;
     height: 28px;
@@ -80,7 +93,10 @@
     border-radius: 7px;
     flex: 0 0 auto;
 }
-.sbgm-icon:hover { background: var(--sbgm-hover); }
+#sbgm_window button:focus,
+#sbgm_window button:active { background: transparent !important; box-shadow: none !important; }
+#sbgm_window .sbgm-icon:hover { background: var(--sbgm-hover) !important; }
+#sbgm_window button:focus-visible { outline: 2px solid var(--sbgm-accent); outline-offset: 1px; }
 .sbgm-icon:disabled { opacity: 0.35; cursor: default; }
 #sbgm_power { color: var(--sbgm-dim); }
 #sbgm_power.on { color: var(--sbgm-accent); }
@@ -219,14 +235,46 @@
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
 }
-.sbgm-window input[type="range"] {
+/* 슬라이더: 테마 영향 없이 직접 그림. --p = 채워진 비율 */
+#sbgm_window input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
     flex: 1;
     min-width: 0;
-    height: 4px;
+    height: 18px;
     margin: 0;
     padding: 0;
-    accent-color: var(--sbgm-accent);
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
     cursor: pointer;
+    touch-action: none;
+}
+#sbgm_window input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%));
+}
+#sbgm_window input[type="range"]::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%));
+}
+#sbgm_window input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    margin-top: -4px;
+    border: 0;
+    border-radius: 50% !important;
+    background: var(--sbgm-fg);
+}
+#sbgm_window input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--sbgm-fg);
 }
 .sbgm-controls {
     display: flex;
@@ -241,12 +289,17 @@
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: var(--sbgm-fg) !important;
-    color: var(--sbgm-solid-bg) !important;
     font-size: 15px;
     margin: 0 2px;
 }
-.sbgm-controls .sbgm-play:hover { opacity: 0.85; }
+#sbgm_window .sbgm-controls .sbgm-play,
+#sbgm_window .sbgm-controls .sbgm-play:hover,
+#sbgm_window .sbgm-controls .sbgm-play:focus,
+#sbgm_window .sbgm-controls .sbgm-play:active {
+    background: var(--sbgm-fg) !important;
+    color: var(--sbgm-solid-bg) !important;
+}
+#sbgm_window .sbgm-controls .sbgm-play:hover { opacity: 0.85; }
 #sbgm_find { color: var(--sbgm-accent); }
 .sbgm-busy #sbgm_find i { animation: sbgm-pulse 0.9s infinite; }
 .sbgm-vol { display: flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--sbgm-dim); font-size: 11px; }
@@ -317,7 +370,8 @@
     color: var(--sbgm-dim);
     border-bottom: 2px solid transparent !important;
 }
-.sbgm-tabs button.active { color: var(--sbgm-fg); font-weight: 700; border-bottom-color: var(--sbgm-accent) !important; }
+#sbgm_window .sbgm-tabs button:focus, #sbgm_window .sbgm-tabs button:active { background: transparent !important; }
+#sbgm_window .sbgm-tabs button.sbgm-sel { color: var(--sbgm-fg) !important; font-weight: 700; border-bottom-color: var(--sbgm-accent) !important; background: transparent !important; }
 
 .sbgm-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 8px; min-height: 60px; }
 .sbgm-scope { display: flex; gap: 4px; padding: 4px 6px 6px; }
@@ -332,7 +386,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.sbgm-scope button.on { background: var(--sbgm-fg) !important; color: var(--sbgm-solid-bg) !important; border-color: var(--sbgm-fg) !important; }
+.sbgm-scope button:focus, .sbgm-scope button:active { background: transparent !important; }
+#sbgm_window .sbgm-scope button.sbgm-sel { color: var(--sbgm-fg) !important; background: color-mix(in srgb, var(--sbgm-accent) 20%, transparent) !important; border-color: var(--sbgm-accent) !important; font-weight: 700; }
 .sbgm-list-label { font-size: 11px; color: var(--sbgm-dim); padding: 4px 6px 2px; }
 .sbgm-empty { padding: 20px 10px; text-align: center; color: var(--sbgm-dim); font-size: 12px; }
 .sbgm-row {
@@ -376,7 +431,9 @@
 }
 .sbgm-row-act:hover { background: var(--sbgm-hover); }
 .sbgm-row-act .fa-youtube { color: #ff4e45; }
-.sbgm-row-act .fa-solid.fa-heart { color: var(--sbgm-accent); }
+.sbgm-heart { display: block; width: 1em; height: 1em; }
+.sbgm-heart.on { color: #e0485a; }
+#sbgm_save .sbgm-heart { width: 15px; height: 15px; }
 
 /* 꺼짐 */
 .sbgm-off .sbgm-mode, .sbgm-off .sbgm-brand { opacity: 0.45; }
@@ -422,3 +479,46 @@
 .sbgm-s-row .menu_button { display: inline-flex; align-items: center; gap: 6px; }
 .sbgm-s-genre-group { grid-column: 1 / -1; margin-top: 6px; font-size: 0.85em; opacity: 0.7; }
 .sbgm-note { display: block; opacity: 0.7; margin-top: 3px; line-height: 1.4; }
+
+/* 입력창 음표 바로가기 */
+#sbgm_quick { position: relative; }
+#sbgm_quick.sbgm-quick-open { opacity: 1; }
+#sbgm_quick.sbgm-quick-playing { color: var(--SmartThemeQuoteColor, #e18a24); }
+#sbgm_quick.sbgm-quick-playing::after {
+    content: "";
+    position: absolute;
+    right: 2px;
+    top: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: sbgm-pulse 1.4s infinite;
+}
+
+/* 터치 기기: 호버가 없으니 버튼을 항상 보이게, 누르기 쉽게 */
+@media (hover: none) {
+    .sbgm-row-acts { opacity: 1; }
+    .sbgm-row-act { width: 32px; height: 32px; font-size: 14px; }
+    .sbgm-status.sbgm-marquee:hover .sbgm-status-text { animation-play-state: running; }
+}
+
+@media (max-width: 768px) {
+    .sbgm-window { height: min(62dvh, 520px) !important; font-size: 13.5px; }
+    .sbgm-icon { width: 34px; height: 34px; }
+    .sbgm-controls { gap: 4px; }
+    .sbgm-controls .sbgm-icon { width: 36px; height: 36px; font-size: 15px; }
+    .sbgm-controls .sbgm-play { width: 44px; height: 44px; }
+    /* 휴대폰은 기기 볼륨으로 조절 (iOS는 웹에서 볼륨 변경이 안 됨) */
+    .sbgm-vol { display: none; }
+    .sbgm-mode button { padding: 4px 9px !important; font-size: 12px !important; }
+    #sbgm_window input[type="range"] { height: 28px; }
+    #sbgm_window input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -7px; }
+    #sbgm_window input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; }
+    .sbgm-now { grid-template-columns: 120px 1fr; }
+    .sbgm-collapsed .sbgm-now { grid-template-columns: 96px 1fr; }
+    .sbgm-tabs button { padding: 9px 2px 8px; font-size: 12.5px; }
+    .sbgm-chips button { padding: 4px 11px; font-size: 12.5px; }
+    .sbgm-row { padding: 6px; }
+    .sbgm-thumb { flex-basis: 72px; width: 72px; height: 40px; }
+}

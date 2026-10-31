@@ -78,6 +78,9 @@ const DEFAULTS = {
 
 const HISTORY_MAX = 100;
 
+const HEART_PATH = 'M12 20.6s-7.6-4.6-9.6-9.4C1 7.9 3 4.4 6.4 4.1c2.1-.2 3.9.9 5.6 3 1.7-2.1 3.5-3.2 5.6-3 3.4.3 5.4 3.8 4 7.1-2 4.8-9.6 9.4-9.6 9.4z';
+const heartSvg = (on) => `<svg class="sbgm-heart${on ? ' on' : ''}" viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true"><path d="${HEART_PATH}" fill="${on ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+
 // ───────────────────────── 상태 ─────────────────────────
 const state = {
     current: null, // {id,title,channel,thumb,duration,query,mood,reason}
@@ -745,7 +748,7 @@ function buildWindow() {
     <button class="sbgm-icon sbgm-play" id="sbgm_play" title="재생/일시정지"><i class="fa-solid fa-play"></i></button>
     <button class="sbgm-icon" id="sbgm_next" title="다음 곡"><i class="fa-solid fa-forward-step"></i></button>
     <button class="sbgm-icon" id="sbgm_reroll" title="이 곡 말고 새로 고르기"><i class="fa-solid fa-arrows-rotate"></i></button>
-    <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)"><i class="fa-regular fa-heart"></i></button>
+    <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)" aria-pressed="false">${heartSvg(false)}</button>
     <button class="sbgm-icon" id="sbgm_block" title="이 곡 다시 안 듣기"><i class="fa-solid fa-ban"></i></button>
     <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
   </div>
@@ -857,6 +860,11 @@ function bindWindow() {
     });
     ro.observe(el);
     window.addEventListener('resize', () => applyWindowGeometry());
+    window.visualViewport?.addEventListener('resize', () => positionMobile());
+    window.visualViewport?.addEventListener('scroll', () => positionMobile());
+    // 입력창 높이가 바뀌면(여러 줄 입력) 따라 올라가게
+    const form = document.getElementById('send_form');
+    if (form) new ResizeObserver(() => positionMobile()).observe(form);
 
     $('#sbgm_mode').on('click', 'button', function () {
         S().mode = this.dataset.mode;
@@ -887,11 +895,13 @@ function bindWindow() {
 
     $('#sbgm_vol').on('input', function () {
         S().volume = Number(this.value);
+        this.style.setProperty('--p', `${this.value}%`);
         try { state.player?.setVolume?.(S().volume); } catch { /* */ }
         save();
     });
     const seek = document.getElementById('sbgm_seek');
     seek.addEventListener('pointerdown', () => { state.seeking = true; });
+    seek.addEventListener('input', () => seek.style.setProperty('--p', `${seek.value / 10}%`));
     seek.addEventListener('change', () => {
         state.seeking = false;
         if (!state.playerReady) return;
@@ -990,14 +1000,14 @@ function listFor(tab) {
 function rowHtml(t, i, tab) {
     const s = S();
     const isCur = state.current?.id === t.id && (tab !== 'queue' || i === state.queueIndex);
-    const heart = isLikedHere(t.id) ? 'fa-solid' : 'fa-regular';
+    const liked = isLikedHere(t.id);
     const removable = tab === 'history' || tab === 'saved';
     return `
 <div class="sbgm-row${isCur ? ' sbgm-cur' : ''}" data-i="${i}" title="${esc(t.title)}">
   <div class="sbgm-thumb"><img loading="lazy" src="${esc(t.thumb || thumbOf(t.id))}" alt="">${t.duration ? `<span>${esc(t.duration)}</span>` : ''}${isCur ? '<i class="fa-solid fa-volume-high"></i>' : ''}</div>
   <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc(t.channel || '')}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}${tab === 'saved' && s.window.likeScope === 'all' && t.chatName ? ` · ${esc(t.chatName)}` : ''}</div></div>
   <div class="sbgm-row-acts">
-    <button class="sbgm-row-act" data-act="save" title="좋아요 (이 채팅에 기록)"><i class="${heart} fa-heart"></i></button>
+    <button class="sbgm-row-act" data-act="save" title="${liked ? '좋아요 취소' : '좋아요 (이 채팅에 기록)'}" aria-pressed="${liked}">${heartSvg(liked)}</button>
     <a class="sbgm-row-act" href="${ytUrl(t.id)}" target="_blank" rel="noopener" title="유튜브에서 열기"><i class="fa-brands fa-youtube"></i></a>
     ${removable ? '<button class="sbgm-row-act" data-act="remove" title="목록에서 지우기"><i class="fa-solid fa-xmark"></i></button>' : ''}
   </div>
@@ -1019,14 +1029,14 @@ function renderList() {
     let label = tab === 'queue' && state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : '';
     if (tab === 'saved') {
         const sc = S().window.likeScope;
-        label = `<div class="sbgm-scope"><button data-scope="chat" class="${sc !== 'all' ? 'on' : ''}">이 채팅${charDisplayName() ? ` · ${esc(charDisplayName())}` : ''}</button><button data-scope="all" class="${sc === 'all' ? 'on' : ''}">전체</button></div>`;
+        label = `<div class="sbgm-scope"><button data-scope="chat" class="${sc !== 'all' ? 'sbgm-sel' : ''}">이 채팅${charDisplayName() ? ` · ${esc(charDisplayName())}` : ''}</button><button data-scope="all" class="${sc === 'all' ? 'sbgm-sel' : ''}">전체</button></div>`;
     }
     $l.html(label + (list?.length ? list.map((t, i) => rowHtml(t, i, tab)).join('') : `<div class="sbgm-empty">${empty}</div>`));
 }
 
 function renderTabs() {
     $win.find('.sbgm-tabs button').each(function () {
-        this.classList.toggle('active', this.dataset.tab === S().window.tab);
+        this.classList.toggle('sbgm-sel', this.dataset.tab === S().window.tab);
     });
 }
 
@@ -1048,7 +1058,11 @@ function renderHead() {
     const s = S();
     $win.toggleClass('sbgm-off', !s.enabled);
     $('#sbgm_power').toggleClass('on', s.enabled).attr('title', s.enabled ? '끄기 (음악 정지 + 판단 중지)' : '켜기');
-    $('#sbgm_mode button').each(function () { this.classList.toggle('active', this.dataset.mode === s.mode); });
+    $('#sbgm_mode button').each(function () {
+        const on = this.dataset.mode === s.mode;
+        this.classList.toggle('sbgm-sel', on);
+        this.setAttribute('aria-pressed', String(on));
+    });
     $('#sbgm_collapse i').attr('class', `fa-solid ${s.window.collapsed ? 'fa-up-right-and-down-left-from-center' : 'fa-minus'}`);
 }
 
@@ -1084,8 +1098,9 @@ ${sg.reason ? `<div class="sbgm-suggest-reason">${esc(sg.reason)}</div>` : ''}
 function renderControls() {
     $('#sbgm_play i').attr('class', `fa-solid ${state.isPlaying ? 'fa-pause' : 'fa-play'}`);
     const saved = state.current && isLikedHere(state.current.id);
-    $('#sbgm_save i').attr('class', `${saved ? 'fa-solid' : 'fa-regular'} fa-heart`);
-    $('#sbgm_vol').val(S().volume);
+    $('#sbgm_save').html(heartSvg(!!saved)).attr('aria-pressed', String(!!saved)).attr('title', saved ? '좋아요 취소' : '좋아요 (이 채팅에 기록)');
+    $('#sbgm_quick').toggleClass('sbgm-quick-playing', state.isPlaying).attr('title', state.isPlaying && state.current ? `Scene BGM · ${state.current.title}` : 'Scene BGM');
+    $('#sbgm_vol').val(S().volume)[0]?.style.setProperty('--p', `${S().volume}%`);
 }
 
 function renderAll() {
@@ -1108,7 +1123,10 @@ function tick() {
         const dur = state.player.getDuration() || 0;
         $('#sbgm_t_cur').text(fmtTime(cur));
         $('#sbgm_t_dur').text(dur ? fmtTime(dur) : 'LIVE');
-        if (!state.seeking) $('#sbgm_seek').val(dur ? Math.round((cur / dur) * 1000) : 0);
+        if (!state.seeking) {
+            const v = dur ? Math.round((cur / dur) * 1000) : 0;
+            $('#sbgm_seek').val(v)[0]?.style.setProperty('--p', `${v / 10}%`);
+        }
     } catch { /* */ }
 }
 
@@ -1125,6 +1143,8 @@ function setWindowOpen(open) {
     save();
     applyWindowGeometry();
     $('#sbgm_wand_label').text(open ? 'Scene BGM 창 닫기' : 'Scene BGM 창 열기');
+    $('#sbgm_quick').toggleClass('sbgm-quick-open', open);
+    positionMobile();
     syncSettingsPanel();
 }
 
@@ -1304,6 +1324,15 @@ function onChatChanged() {
     syncSettingsPanel();
 }
 
+function addQuickButton() {
+    if (document.getElementById('sbgm_quick')) return;
+    const btn = $('<div id="sbgm_quick" class="fa-solid fa-music interactable" tabindex="0" role="button" title="Scene BGM"></div>');
+    const $right = $('#rightSendForm');
+    if ($right.length) $right.prepend(btn); else $('#leftSendForm').append(btn);
+    btn.on('click', () => setWindowOpen(!S().windowOpen));
+    btn.on('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setWindowOpen(!S().windowOpen); } });
+}
+
 function addWandButton() {
     const html = `
 <div id="sbgm_wand_container" class="extension_container">
@@ -1352,6 +1381,8 @@ jQuery(async () => {
         buildWindow();
         buildSettingsPanel();
         addWandButton();
+        addQuickButton();
+        $('#sbgm_quick').toggleClass('sbgm-quick-open', S().windowOpen);
         registerSlash();
         const c = ctx();
         const ev = c.eventTypes || c.event_types;
