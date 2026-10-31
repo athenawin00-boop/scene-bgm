@@ -1972,97 +1972,114 @@ function buildSettingsPanel() {
     <div class="inline-drawer-content">
       <div class="sbgm-settings-away" id="sbgm_settings_away">플레이어 창에서 설정을 열어 두었어요. <span class="menu_button" id="sbgm_settings_back">여기로 가져오기</span></div>
       <div class="sbgm-settings-body" id="sbgm_settings_body">
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_enabled"> 사용하기</label>
-      <div class="sbgm-s-row">
-        <div class="menu_button" id="sbgm_s_toggle_window"><i class="fa-solid fa-window-restore"></i> 플레이어 창 열기/닫기</div>
-        <div class="menu_button" id="sbgm_s_reset_window"><i class="fa-solid fa-arrows-to-dot"></i> 창 위치 초기화</div>
+      <div class="sbgm-s-top">
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_enabled"> 사용하기</label>
+        <div class="sbgm-s-row">
+          <div class="menu_button" id="sbgm_s_toggle_window"><i class="fa-solid fa-window-restore"></i> 창 열기/닫기</div>
+          <div class="menu_button" id="sbgm_s_reset_window"><i class="fa-solid fa-arrows-to-dot"></i> 창 위치 초기화</div>
+        </div>
       </div>
 
-      <h4>창</h4>
-      <label for="sbgm_s_opacity">불투명도 <b id="sbgm_s_opacity_v">100%</b></label>
-      <input type="range" id="sbgm_s_opacity" min="15" max="100" step="5">
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_hoversolid"> 마우스를 올리면 선명하게</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_shadow"> 창 그림자</label>
+      <details class="sbgm-sec" data-sec="pick">
+        <summary><i class="fa-solid fa-wand-magic-sparkles"></i> 선곡 <small>언제·어떻게 고를지</small></summary>
+        <label for="sbgm_s_mode">모드</label>
+        <select id="sbgm_s_mode" class="text_pole">
+          <option value="auto">자동 — 분위기가 바뀌면 바로 교체</option>
+          <option value="suggest">추천 — 후보만 띄우고 내가 고름</option>
+          <option value="manual">수동 — 🪄 눌렀을 때만</option>
+        </select>
+        <label for="sbgm_s_pick">고르는 방식</label>
+        <select id="sbgm_s_pick" class="text_pole">
+          <option value="songs">실제 곡 추천 — 아티스트·곡명을 골라 찾기</option>
+          <option value="mood">분위기 검색 — 분위기 검색어로 찾기</option>
+        </select>
+        <label for="sbgm_s_profile">판단에 쓸 연결 프로필</label>
+        <select id="sbgm_s_profile" class="text_pole"></select>
+        <small class="sbgm-note">싸고 빠른 모델 프로필을 추천해요. "메인 API"는 지금 연결된 모델을 써요.</small>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_switchend"> 자동으로 바뀔 땐 듣던 곡이 끝난 뒤에</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_franchise"> 캐릭터 원작의 테마곡·OST도 고르기</label>
+        <details class="sbgm-sub">
+          <summary>세부 조절</summary>
+          <div class="sbgm-s-grid">
+            <label>읽을 내 메시지 수 <input type="number" class="text_pole" id="sbgm_s_user" min="0" max="10"></label>
+            <label>읽을 AI 답변 수 <input type="number" class="text_pole" id="sbgm_s_ai" min="1" max="10"></label>
+            <label>판단 간격 (AI 답변 수) <input type="number" class="text_pole" id="sbgm_s_gap" min="1" max="50"></label>
+            <label>판단 최대 토큰 <input type="number" class="text_pole" id="sbgm_s_tokens" min="100" max="8000" step="50"></label>
+          </div>
+          <small class="sbgm-note">추론(thinking) 모델은 답이 비어 올 수 있어요. 그럴 땐 최대 토큰을 1500 이상으로.</small>
+        </details>
+      </details>
 
-      <h4>판단</h4>
-      <label for="sbgm_s_profile">판단에 쓸 연결 프로필</label>
-      <select id="sbgm_s_profile" class="text_pole"></select>
-      <small class="sbgm-note">메인 롤플 모델과 따로, 싸고 빠른 모델 프로필을 고르는 걸 추천해요. "메인 API"는 지금 연결된 모델을 써요.</small>
-      <label for="sbgm_s_mode">모드</label>
-      <select id="sbgm_s_mode" class="text_pole">
-        <option value="auto">자동 — 분위기가 바뀌면 바로 교체</option>
-        <option value="suggest">추천 — 후보만 띄우고 내가 고름</option>
-        <option value="manual">수동 — 버튼 눌렀을 때만</option>
-      </select>
-      <div class="sbgm-s-grid">
-        <label>읽을 내 메시지 수 <input type="number" class="text_pole" id="sbgm_s_user" min="0" max="10"></label>
-        <label>읽을 AI 답변 수 <input type="number" class="text_pole" id="sbgm_s_ai" min="1" max="10"></label>
-        <label>최소 간격 (AI 답변 수) <input type="number" class="text_pole" id="sbgm_s_gap" min="1" max="50"></label>
-        <label>판단 최대 토큰 <input type="number" class="text_pole" id="sbgm_s_tokens" min="100" max="8000" step="50"></label>
-      </div>
-      <small class="sbgm-note">추론(thinking) 모델은 토큰을 많이 써서 답이 비어 올 수 있어요. 그럴 땐 최대 토큰을 1500 이상으로.</small>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_switchend"> 자동으로 새 곡이 정해지면 듣던 곡이 끝난 뒤에 바꾸기</label>
+      <details class="sbgm-sec" data-sec="genre">
+        <summary><i class="fa-solid fa-tags"></i> 장르 <small>어떤 음악을</small></summary>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_perchar"> <span id="sbgm_s_perchar_label">이 캐릭터만 장르 따로 저장</span></label>
+        <div class="sbgm-s-genres" id="sbgm_s_genres"></div>
+        <label for="sbgm_s_custom">직접 추가 (쉼표로 구분)</label>
+        <input type="text" class="text_pole" id="sbgm_s_custom" placeholder="dark academia, medieval tavern">
+        <label for="sbgm_s_excl">피할 것</label>
+        <input type="text" class="text_pole" id="sbgm_s_excl" placeholder="EDM, heavy metal, 동요">
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_inst"> 연주곡만 (가사 없는 곡)</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_strict"> 장르 고정 (장면이 달라도 안 벗어남)</label>
+      </details>
 
-      <h4>곡 카드</h4>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_card"> AI 답장에 곡 카드 넣기</label>
-      <small class="sbgm-note">답장을 쓰는 메인 모델이 답장 끝에 곡 하나를 적고, 그 메시지 위에 카드가 붙어요. 판단 호출이 따로 안 들어서 비용이 없고, 이야기를 쓰는 모델이 고르니 장면 이해가 가장 정확해요. 카드가 붙은 답장은 판단 프로필을 부르지 않아요.</small>
-      <div class="sbgm-s-grid">
-        <label>답장 몇 개마다 카드 <input type="number" class="text_pole" id="sbgm_s_cardevery" min="1" max="99"></label>
-      </div>
-      <label for="sbgm_s_cardstyle">카드 모양</label>
-      <select id="sbgm_s_cardstyle" class="text_pole"></select>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardauto"> 카드가 붙은 답장이 오면 바로 틀기 (추천 모드·'끝난 뒤 바꾸기'면 다음 곡으로)</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardpick"> 메시지의 🎵로 고른 곡을 그 메시지에 카드로 남기기</label>
-      <small class="sbgm-note">메시지의 ⋯ 메뉴에 🎵가 있어요. 누르면 그 메시지까지의 대화로 곡을 골라요(지나간 장면도 됨). 카드를 꾹 누르면(PC는 우클릭) 유튜브 열기·좋아요·지우기 메뉴가 떠요.</small>
+      <details class="sbgm-sec" data-sec="youtube">
+        <summary><i class="fa-brands fa-youtube"></i> 유튜브 <small>검색·거르기·막힌 곡</small></summary>
+        <label for="sbgm_s_source">검색 방식</label>
+        <select id="sbgm_s_source" class="text_pole">
+          <option value="st">실리태번 서버 경유 (키 필요 없음)</option>
+          <option value="api">YouTube Data API 키 사용</option>
+        </select>
+        <input type="password" class="text_pole" id="sbgm_s_key" placeholder="YouTube Data API 키 (AIza…)" autocomplete="off">
+        <small class="sbgm-note" id="sbgm_s_source_note"></small>
+        <label for="sbgm_s_sort">고르는 순서</label>
+        <select id="sbgm_s_sort" class="text_pole">
+          <option value="views">조회수 높은 순 (검색 결과 안에서)</option>
+          <option value="relevance">유튜브 검색 순서 그대로</option>
+        </select>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_short"> 한 곡짜리 우선 (긴 모음 영상은 뒤로)</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_free"> 무료 BGM·저작권 없음 영상은 뒤로</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_ai"> AI 생성 음악 거르기</label>
+        <div class="sbgm-s-divider">재생이 막힌 곡</div>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_alt"> 같은 곡의 다른 영상부터 시도</label>
+        <label for="sbgm_s_blocked">그래도 막혔을 때</label>
+        <select id="sbgm_s_blocked" class="text_pole">
+          <option value="youtube">물어보고 유튜브 창으로 넘기기</option>
+          <option value="skip">건너뛰기</option>
+        </select>
+        <small class="sbgm-note">가수·음반사가 다른 사이트 재생을 막아 둔 곡이에요. 유튜브 창으로 넘기면 남은 대기열이 재생목록으로 이어서 나와요.</small>
+      </details>
 
-      <h4>장르</h4>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_perchar"> <span id="sbgm_s_perchar_label">이 캐릭터만 장르 따로 저장</span></label>
-      <div class="sbgm-s-genres" id="sbgm_s_genres"></div>
-      <label for="sbgm_s_custom">직접 추가 (쉼표로 구분, 영어 추천)</label>
-      <input type="text" class="text_pole" id="sbgm_s_custom" placeholder="dark academia, medieval tavern">
-      <label for="sbgm_s_excl">피할 것</label>
-      <input type="text" class="text_pole" id="sbgm_s_excl" placeholder="EDM, heavy metal, 동요">
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_inst"> 연주곡만 (가사 없는 곡)</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_franchise"> 캐릭터 원작의 테마곡·OST도 고르기 (끄면 배트맨 세계관이라고 배트맨 테마를 고르지 않음)</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_strict"> 장르 고정 (장면이 달라도 안 벗어남)</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_short"> 한 곡짜리 우선 (몇 시간짜리 모음 영상은 뒤로)</label>
-      <label for="sbgm_s_pick">곡 고르는 방식</label>
-      <select id="sbgm_s_pick" class="text_pole">
-        <option value="songs">실제 곡 추천 — AI가 아티스트·곡명을 골라 찾아요</option>
-        <option value="mood">분위기 검색 — 분위기 검색어로 찾아요 (BGM 모음 위주)</option>
-      </select>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_free"> '무료 BGM·저작권 없음' 영상은 뒤로</label>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_alt"> 막힌 곡은 같은 곡의 다른 영상(Topic 음원·공식 오디오·가사 영상)부터 시도</label>
-      <label for="sbgm_s_blocked">그래도 막혔을 때</label>
-      <select id="sbgm_s_blocked" class="text_pole">
-        <option value="youtube">물어보고 유튜브 창으로 넘기기</option>
-        <option value="skip">건너뛰기</option>
-      </select>
-      <small class="sbgm-note">유명 가수 공식 영상은 권리자가 다른 사이트 재생을 막아 둔 경우가 많아요. 버튼을 누르면 대기열 전체가 유튜브 창에서 재생목록으로 이어서 재생돼요. 모바일은 '유튜브에서 듣기' 링크가 떠요.</small>
-      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_ai"> AI 생성 음악 거르기 (유튜브 'AI·합성 콘텐츠' 표시, 설명란의 AI 제작 문구)</label>
-      <div class="sbgm-s-row">
-        <div class="menu_button" id="sbgm_s_clear_ai"><i class="fa-solid fa-robot"></i> AI 채널 기억 비우기 (<span id="sbgm_s_ai_n">0</span>)</div>
-        <div class="menu_button" id="sbgm_s_clear_ch"><i class="fa-solid fa-user-slash"></i> 막은 채널 비우기 (<span id="sbgm_s_ch_n">0</span>)</div>
-        <div class="menu_button" id="sbgm_s_clear_dev"><i class="fa-solid fa-mobile-screen"></i> 이 기기에서 막힌 영상 기억 비우기 (<span id="sbgm_s_dev_n">0</span>)</div>
-      </div>
-      <label for="sbgm_s_sort">고르는 순서</label>
-      <select id="sbgm_s_sort" class="text_pole">
-        <option value="views">조회수 높은 순 (검색 결과 안에서)</option>
-        <option value="relevance">유튜브 검색 순서 그대로</option>
-      </select>
+      <details class="sbgm-sec" data-sec="card">
+        <summary><i class="fa-solid fa-compact-disc"></i> 곡 카드 <small>답장 위에 붙는 카드</small></summary>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_card"> AI 답장에 곡 카드 넣기</label>
+        <small class="sbgm-note">답장을 쓰는 모델이 곡을 직접 골라 답장 끝에 적어요. 판단 호출이 따로 들지 않아요.</small>
+        <div class="sbgm-s-grid">
+          <label>답장 몇 개마다 <input type="number" class="text_pole" id="sbgm_s_cardevery" min="1" max="99"></label>
+        </div>
+        <label for="sbgm_s_cardstyle">카드 모양</label>
+        <select id="sbgm_s_cardstyle" class="text_pole"></select>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardauto"> 카드가 붙은 답장이 오면 바로 틀기</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardpick"> 메시지 🎵로 고른 곡도 카드로 남기기</label>
+      </details>
 
-      <h4>유튜브 검색</h4>
-      <select id="sbgm_s_source" class="text_pole">
-        <option value="st">실리태번 서버 경유 (키 필요 없음)</option>
-        <option value="api">YouTube Data API 키 사용</option>
-      </select>
-      <input type="password" class="text_pole" id="sbgm_s_key" placeholder="YouTube Data API 키 (AIza…)" autocomplete="off">
-      <small class="sbgm-note" id="sbgm_s_source_note"></small>
+      <details class="sbgm-sec" data-sec="window">
+        <summary><i class="fa-solid fa-window-maximize"></i> 창 <small>불투명도·그림자</small></summary>
+        <label for="sbgm_s_opacity">불투명도 <b id="sbgm_s_opacity_v">100%</b></label>
+        <input type="range" id="sbgm_s_opacity" min="15" max="100" step="5">
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_hoversolid"> 마우스를 올리면 선명하게</label>
+        <label class="checkbox_label"><input type="checkbox" id="sbgm_s_shadow"> 창 그림자</label>
+      </details>
 
-      <h4>기록</h4>
-      <div class="sbgm-s-row">
-        <div class="menu_button" id="sbgm_s_clear_hist"><i class="fa-solid fa-clock-rotate-left"></i> 기록 비우기</div>
-        <div class="menu_button" id="sbgm_s_clear_block"><i class="fa-solid fa-ban"></i> 안 듣기 목록 비우기 (<span id="sbgm_s_block_n">0</span>)</div>
+      <details class="sbgm-sec" data-sec="data">
+        <summary><i class="fa-solid fa-broom"></i> 기록·초기화</summary>
+        <div class="sbgm-s-col">
+          <div class="menu_button" id="sbgm_s_clear_hist"><i class="fa-solid fa-clock-rotate-left"></i> 들은 기록 비우기</div>
+          <div class="menu_button" id="sbgm_s_clear_block"><i class="fa-solid fa-ban"></i> 안 듣기 곡 비우기 (<span id="sbgm_s_block_n">0</span>)</div>
+          <div class="menu_button" id="sbgm_s_clear_ch"><i class="fa-solid fa-user-slash"></i> 막은 채널 비우기 (<span id="sbgm_s_ch_n">0</span>)</div>
+          <div class="menu_button" id="sbgm_s_clear_ai"><i class="fa-solid fa-robot"></i> AI 채널 기억 비우기 (<span id="sbgm_s_ai_n">0</span>)</div>
+          <div class="menu_button" id="sbgm_s_clear_dev"><i class="fa-solid fa-mobile-screen"></i> 이 기기에서 막힌 영상 비우기 (<span id="sbgm_s_dev_n">0</span>)</div>
+        </div>
+      </details>
       </div>
       </div>
     </div>
@@ -2081,6 +2098,13 @@ function buildSettingsPanel() {
     $('#sbgm_s_hoversolid').on('change', function () { S().window.hoverSolid = this.checked; applyLook(); save(); });
     $('#sbgm_s_shadow').on('change', function () { S().window.shadow = this.checked; applyLook(); save(); });
     $('#sbgm_settings_back').on('click', () => toggleWindowSettings(false));
+    // 펼친 항목 기억 (처음엔 선곡만 펼침)
+    const opened = S().window.openSecs || ['pick'];
+    $('#sbgm_settings_body .sbgm-sec').each(function () { this.open = opened.includes(this.dataset.sec); });
+    $('#sbgm_settings_body .sbgm-sec').on('toggle', function () {
+        S().window.openSecs = $('#sbgm_settings_body .sbgm-sec').filter((_, el) => el.open).map((_, el) => el.dataset.sec).get();
+        save();
+    });
     $('#sbgm_s_toggle_window').on('click', () => setWindowOpen(!S().windowOpen));
     $('#sbgm_s_reset_window').on('click', () => {
         Object.assign(S().window, { x: null, y: null, w: 340, h: 560, collapsed: false });
