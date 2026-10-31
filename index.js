@@ -70,6 +70,7 @@ const DEFAULTS = {
     avoidFree: true, // '무료 BGM / 저작권 없음' 영상 뒤로
     embedOk: {}, // 영상 id → 외부 재생 가능 여부 캐시
     blockedPlay: 'youtube', // 실리태번 안에서 막힌 곡: skip | youtube(유튜브 창으로 넘기기)
+    allowFranchise: false, // 캐릭터 원작 테마곡·OST 허용
     avoidAi: true, // AI 생성 음악 거르기
     aiVideo: {}, // 영상 id → AI 표시 여부 캐시
     aiChannels: [], // AI 음악으로 확인된 채널 (자동 학습)
@@ -469,24 +470,34 @@ function collectScene() {
 function buildPrompt(force, reject = null, extra = '') {
     const recent = collectScene();
 
+    const songsMode = S().pickMode === 'songs';
+    const franchiseRule = S().allowFranchise
+        ? 'Music from the characters\' source work is allowed, but only when it truly fits this moment\'s emotion.'
+        : 'Do NOT pick music from the characters\' source franchise (their theme songs, the official soundtrack of their movies/series/games/comics). Who the characters are (a superhero, an idol, a game character) says nothing about how this scene feels.';
     const system = [
         'You are the music supervisor for an ongoing interactive story (roleplay chat).',
-        'The scene is given oldest to newest, as the user\'s messages and the AI\'s replies.',
-        'The LATEST AI reply is the present moment: weigh it most. Use the earlier reply and the user\'s message to understand where the scene came from and where it is heading.',
-        'Consider: location and setting, time of day and weather, emotional tone, tension and pacing, and the dynamic between the characters.',
-        'Choose music that underscores the feeling of the moment, not a literal description of objects in the text.',
-        ...(S().pickMode === 'songs' ? [
+        'Your job is to score THIS MOMENT between the characters, not to represent who the characters are.',
+        '',
+        'How to read the scene:',
+        '- It is given oldest to newest. The LATEST AI reply is the present moment: weigh it most. The earlier messages show where the scene came from.',
+        '- Character names, titles and fandom are only for knowing who is who. Ignore them when choosing music.',
+        '- Find the emotional core: what is happening BETWEEN the characters right now (comfort, banter, flirting, longing, awkwardness, trust, betrayal, grief, confrontation, quiet intimacy…), the unspoken subtext, and how the user\'s character is likely feeling.',
+        '- Then the setting only as color: place, time of day, weather, pace.',
+        '- ' + franchiseRule,
+        '- Choose music that underscores that feeling, not a literal description of objects in the text.',
+        '',
+        ...(songsMode ? [
             'Recommend 5 REAL, existing recordings (artist + exact title) that are likely to be on YouTube: commercial songs, film/game/anime scores, jazz/classical recordings. Not generic "relaxing BGM" compilations or royalty-free stock music.',
             'Vary the artists. Order them best fit first. Respect the genre rules below.',
-            'Answer with ONLY a JSON object, no other text:',
-            '{"change": true|false, "mood": "2-5 English words", "songs": [{"artist": "...", "title": "..."}], "query": "fallback YouTube search, 3-7 English words describing the sound", "reason": "한국어 한 문장으로 선곡 이유"}',
+            'Answer with ONLY a JSON object, no other text. Fill "moment" first, then pick music for it:',
+            '{"moment": "one English sentence: the emotional core between the characters right now", "change": true|false, "mood": "2-5 English words", "songs": [{"artist": "...", "title": "..."}], "query": "fallback YouTube search, 3-7 English words describing the sound", "reason": "한국어 한 문장: 지금 두 사람 사이의 감정과 그래서 이 곡을 고른 이유"}',
         ] : [
-            'Answer with ONLY a JSON object, no other text:',
-            '{"change": true|false, "mood": "2-5 English words", "query": "YouTube search query, 3-7 English words, describe the sound (genre + mood + instrument), no artist names unless essential", "reason": "한국어 한 문장으로 선곡 이유"}',
+            'Answer with ONLY a JSON object, no other text. Fill "moment" first, then pick music for it:',
+            '{"moment": "one English sentence: the emotional core between the characters right now", "change": true|false, "mood": "2-5 English words", "query": "YouTube search query, 3-7 English words, describe the sound (genre + mood + instrument); no character, franchise or artist names", "reason": "한국어 한 문장: 지금 두 사람 사이의 감정과 그래서 이 곡을 고른 이유"}',
         ]),
         force
-            ? 'You must set "change": true and provide a query.'
-            : 'Set "change": false when the current track still fits. Be conservative: change only on a clear shift of mood, location or tension.',
+            ? 'You must set "change": true and provide music.'
+            : 'Set "change": false when the current track still fits the emotional core. Change only on a clear shift in the feeling between the characters, the tension, or the location.',
     ].join('\n');
 
     const cur = state.current
@@ -501,7 +512,7 @@ function buildPrompt(force, reject = null, extra = '') {
     const playedNote = recentPlayed.length && S().pickMode === 'songs' ? `Recently played (do not recommend again): ${recentPlayed.join(', ')}` : '';
     const likedNote = liked.length ? `Tracks the user liked in this story (taste hint, don't repeat them): ${liked.join(', ')}` : '';
     const user = [
-        `Story: ${charDisplayName() || 'unknown'}`,
+        `Characters: ${charDisplayName() || 'unknown'} (AI) and ${ctx().name1 || 'the user'} (user's character)`,
         genreRules(),
         likedNote,
         playedNote,
@@ -526,7 +537,7 @@ function parseDecision(text) {
                 .filter((x) => x.title)
                 .slice(0, 8);
             if (j && (j.query || songs.length || j.change === false)) {
-                return { change: j.change !== false, mood: String(j.mood || ''), query: String(j.query || ''), reason: String(j.reason || ''), songs };
+                return { change: j.change !== false, moment: String(j.moment || ''), mood: String(j.mood || ''), query: String(j.query || ''), reason: String(j.reason || ''), songs };
             }
         } catch { /* fallthrough */ }
     }
@@ -583,7 +594,7 @@ async function runDirector({ force = false, source = 'auto', reject = null } = {
             : '';
         const d = await askDirector(force, reject, extra);
         const record = (result) => {
-            state.lastDecision = { result, mood: d.mood, query: d.query, reason: d.reason, thinking: d.thinking, songs: d.songs || [], found: d.found || null, at: Date.now(), source };
+            state.lastDecision = { result, moment: d.moment, mood: d.mood, query: d.query, reason: d.reason, thinking: d.thinking, songs: d.songs || [], found: d.found || null, at: Date.now(), source };
         };
         if (!d.change && !force && !reject) {
             record('keep');
@@ -1095,6 +1106,7 @@ function renderWhy() {
 <div class="sbgm-why-head">${d.result ? `<span class="sbgm-badge">${RESULT_LABEL[d.result] || d.result}</span>` : ''}${time ? `<span>${time}</span>` : ''}</div>
 ${d.reason ? `<p class="sbgm-why-reason">${esc(d.reason)}</p>` : ''}
 <dl>
+  ${d.moment ? `<dt>장면 핵심</dt><dd>${esc(d.moment)}</dd>` : ''}
   ${d.mood ? `<dt>분위기</dt><dd>${esc(d.mood)}</dd>` : ''}
   ${d.query && !d.songs?.length ? `<dt>검색어</dt><dd>${esc(d.query)}</dd>` : ''}
 </dl>
@@ -1633,6 +1645,7 @@ function buildSettingsPanel() {
       <label for="sbgm_s_excl">피할 것</label>
       <input type="text" class="text_pole" id="sbgm_s_excl" placeholder="EDM, heavy metal, 동요">
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_inst"> 연주곡만 (가사 없는 곡)</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_franchise"> 캐릭터 원작의 테마곡·OST도 고르기 (끄면 배트맨 세계관이라고 배트맨 테마를 고르지 않음)</label>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_strict"> 장르 고정 (장면이 달라도 안 벗어남)</label>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_short"> 한 곡짜리 우선 (몇 시간짜리 모음 영상은 뒤로)</label>
       <label for="sbgm_s_pick">곡 고르는 방식</label>
@@ -1717,6 +1730,7 @@ function buildSettingsPanel() {
     $('#sbgm_s_pick').on('change', function () { S().pickMode = this.value; save(); });
     $('#sbgm_s_free').on('change', function () { S().avoidFree = this.checked; save(); });
     $('#sbgm_s_ai').on('change', function () { S().avoidAi = this.checked; save(); });
+    $('#sbgm_s_franchise').on('change', function () { S().allowFranchise = this.checked; save(); });
     $('#sbgm_s_blocked').on('change', function () { S().blockedPlay = this.value; save(); });
     $('#sbgm_s_clear_ai').on('click', () => { S().aiChannels = []; S().aiVideo = {}; save(); syncSettingsPanel(); });
     $('#sbgm_s_clear_ch').on('click', () => { S().blockedChannels = []; save(); syncSettingsPanel(); });
@@ -1774,6 +1788,7 @@ function syncSettingsPanel() {
     $('#sbgm_s_pick').val(s.pickMode);
     $('#sbgm_s_free').prop('checked', s.avoidFree);
     $('#sbgm_s_ai').prop('checked', s.avoidAi);
+    $('#sbgm_s_franchise').prop('checked', s.allowFranchise);
     $('#sbgm_s_blocked').val(s.blockedPlay);
     $('#sbgm_s_ai_n').text(s.aiChannels.length);
     $('#sbgm_s_ch_n').text(s.blockedChannels.length);
