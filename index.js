@@ -785,7 +785,8 @@ function playExternal(track, { recorded = false } = {}) {
         save();
     }
     state.extPending = trackLite(track);
-    setStatus('실리태번 안에서 재생이 막힌 곡이에요');
+    // 상태 줄은 판단 이유 그대로 두고, 막혔다는 안내는 아래 칸에서만
+    setStatus(track.reason || track.mood || statusText);
     renderAll();
 }
 
