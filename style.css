@@ -28,7 +28,24 @@
     line-height: 1.4;
 }
 .sbgm-window * { box-sizing: border-box; }
-.sbgm-window.sbgm-hidden { visibility: hidden; pointer-events: none; opacity: 0; }
+.sbgm-window { opacity: var(--sbgm-op, 1); transition: opacity 0.15s; }
+.sbgm-window.sbgm-hoversolid:hover,
+.sbgm-window.sbgm-hoversolid:focus-within,
+.sbgm-window.sbgm-dragging,
+.sbgm-window.sbgm-cfg-open { opacity: 1; }
+.sbgm-window.sbgm-noshadow { box-shadow: none; }
+.sbgm-window.sbgm-hidden { visibility: hidden; pointer-events: none; opacity: 0 !important; }
+
+/* 창 안 설정 */
+.sbgm-cfg { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.sbgm-cfg-open .sbgm-cfg { display: flex; }
+.sbgm-cfg-open .sbgm-scroll { display: none; }
+.sbgm-cfg-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--sbgm-border); }
+.sbgm-cfg-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 12px 14px; font-size: 13px; }
+.sbgm-cfg-body .text_pole { width: 100%; font-size: 13px; }
+.sbgm-cfg-body small.sbgm-note { font-size: 11.5px; }
+#sbgm_cfg_btn.on { color: var(--sbgm-accent) !important; }
+.sbgm-window.sbgm-cfg-open.sbgm-collapsed { height: min(70dvh, 560px) !important; }
 .sbgm-window.sbgm-dragging { opacity: 0.88; user-select: none; }
 
 .sbgm-window button {
@@ -53,7 +70,10 @@
 }
 .sbgm-dragging .sbgm-head { cursor: grabbing; }
 .sbgm-grip { color: var(--sbgm-dim); font-size: 11px; }
-.sbgm-brand { font-weight: 700; font-size: 12.5px; letter-spacing: 0.02em; margin-right: auto; white-space: nowrap; }
+.sbgm-brand { font-weight: 700; font-size: 12.5px; letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
+.sbgm-mode { flex: 0 0 auto; }
+#sbgm_window .sbgm-mode button { white-space: nowrap; }
+.sbgm-head .sbgm-icon { width: 26px; height: 28px; }
 .sbgm-mode {
     display: inline-flex;
     border: 1px solid var(--sbgm-border);
@@ -540,13 +560,15 @@
 }
 
 /* 설정 패널 */
-.sbgm-settings h4 { margin: 12px 0 4px; }
-.sbgm-settings label { display: block; margin-top: 6px; }
-.sbgm-settings .checkbox_label { display: flex; margin-top: 4px; }
+.sbgm-settings-body h4 { margin: 12px 0 4px; }
+.sbgm-settings-body label { display: block; margin-top: 6px; }
+.sbgm-settings-body .checkbox_label { display: flex; margin-top: 4px; }
+.sbgm-settings-away { display: none; padding: 6px 0; opacity: 0.8; }
+.sbgm-settings-away .menu_button { display: inline-flex; width: auto; padding: 3px 10px; margin-left: 6px; }
 .sbgm-s-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
 .sbgm-s-row .menu_button { width: auto; padding: 4px 10px; }
 .sbgm-s-grid { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
-.sbgm-settings .sbgm-s-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
+.sbgm-settings-body .sbgm-s-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
 .sbgm-s-grid input { width: 90px !important; flex: 0 0 90px; margin: 0; }
 .sbgm-s-genres { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 8px; }
 .sbgm-s-row .menu_button { display: inline-flex; align-items: center; gap: 6px; }
@@ -579,6 +601,10 @@
 @media (max-width: 768px) {
     .sbgm-window { height: min(62dvh, 520px) !important; font-size: 13.5px; }
     .sbgm-icon { width: 34px; height: 34px; }
+    .sbgm-head .sbgm-icon { width: 30px; height: 32px; }
+    .sbgm-brand { display: none; }
+    .sbgm-head { gap: 2px; }
+    .sbgm-mode { margin-right: auto; }
     .sbgm-controls { gap: 4px; }
     .sbgm-controls .sbgm-icon { width: 36px; height: 36px; font-size: 15px; }
     .sbgm-controls .sbgm-play { width: 44px; height: 44px; }

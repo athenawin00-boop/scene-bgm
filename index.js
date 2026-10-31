@@ -88,7 +88,7 @@ const DEFAULTS = {
     volume: 60,
     genre: { ...DEFAULT_GENRE_CONFIG },
     perChar: {},
-    window: { x: null, y: null, w: 340, h: 560, collapsed: false, tab: 'queue', genresOpen: false, likeScope: 'chat' },
+    window: { x: null, y: null, w: 340, h: 560, collapsed: false, tab: 'queue', genresOpen: false, likeScope: 'chat', opacity: 100, hoverSolid: true, shadow: true },
     history: [],
     saved: [],
     blocked: [],
@@ -1380,11 +1380,16 @@ function buildWindow() {
       <button data-mode="suggest" title="바꿀 때가 되면 후보만 띄워요">추천</button>
       <button data-mode="manual" title="🔍 버튼을 눌렀을 때만 골라요">수동</button>
     </div>
+    <button class="sbgm-icon" id="sbgm_cfg_btn" title="설정"><i class="fa-solid fa-gear"></i></button>
     <button class="sbgm-icon" id="sbgm_power" title="켜기/끄기"><i class="fa-solid fa-power-off"></i></button>
     <button class="sbgm-icon" id="sbgm_collapse" title="접기/펼치기"><i class="fa-solid fa-minus"></i></button>
     <button class="sbgm-icon" id="sbgm_close" title="창 닫기 (음악은 계속)"><i class="fa-solid fa-xmark"></i></button>
   </div>
 
+  <div class="sbgm-cfg" id="sbgm_cfg">
+    <div class="sbgm-cfg-head"><b><i class="fa-solid fa-gear"></i> 설정</b><button class="sbgm-icon" id="sbgm_cfg_close" title="설정 닫기"><i class="fa-solid fa-arrow-left"></i></button></div>
+    <div class="sbgm-cfg-body" id="sbgm_cfg_body"></div>
+  </div>
   <div class="sbgm-scroll" id="sbgm_scroll">
   <div class="sbgm-now">
     <div class="sbgm-video" id="sbgm_video"><div class="sbgm-video-empty"><i class="fa-solid fa-music"></i></div></div>
@@ -1443,6 +1448,7 @@ function buildWindow() {
     $win = $('#sbgm_window');
     bindWindow();
     applyWindowGeometry();
+    applyLook();
 }
 
 function applyWindowGeometry() {
@@ -1469,6 +1475,40 @@ function applyWindowGeometry() {
 }
 
 const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+
+// 불투명도·그림자
+function applyLook() {
+    if (!$win) return;
+    const w = S().window;
+    const el = $win[0];
+    el.style.setProperty('--sbgm-op', String(Math.min(100, Math.max(15, Number(w.opacity) || 100)) / 100));
+    el.classList.toggle('sbgm-hoversolid', !!w.hoverSolid);
+    el.classList.toggle('sbgm-noshadow', !w.shadow);
+}
+
+// 확장 탭의 설정 본문을 창 안으로 옮겨서 보여줌 (같은 요소라 저장·동작이 그대로)
+let cfgWasCollapsed = false;
+function toggleWindowSettings(open = !$win.hasClass('sbgm-cfg-open')) {
+    const body = document.getElementById('sbgm_settings_body');
+    if (!body) return;
+    if (open) {
+        if (!S().windowOpen) setWindowOpen(true);
+        cfgWasCollapsed = !!S().window.collapsed;
+        if (cfgWasCollapsed) { S().window.collapsed = false; applyWindowGeometry(); renderHead(); }
+        document.getElementById('sbgm_cfg_body').appendChild(body);
+        $win.addClass('sbgm-cfg-open');
+        $('#sbgm_settings_away').show();
+        fillProfiles();
+        syncSettingsPanel();
+    } else {
+        $('.sbgm-settings .inline-drawer-content').append(body);
+        $win.removeClass('sbgm-cfg-open');
+        $('#sbgm_settings_away').hide();
+        if (cfgWasCollapsed) { S().window.collapsed = true; cfgWasCollapsed = false; applyWindowGeometry(); renderHead(); }
+    }
+    $('#sbgm_cfg_btn').toggleClass('on', open);
+    positionMobile();
+}
 
 // 모바일에서는 입력창 위에 붙인다. (실리태번이 모바일에서 html에 transform을 걸어 bottom 기준 고정이 안 먹음)
 function positionMobile() {
@@ -1539,7 +1579,10 @@ function bindWindow() {
         syncSettingsPanel();
     });
     $('#sbgm_power').on('click', () => setEnabled(!S().enabled));
+    $('#sbgm_cfg_btn').on('click', () => toggleWindowSettings());
+    $('#sbgm_cfg_close').on('click', () => toggleWindowSettings(false));
     $('#sbgm_collapse').on('click', () => {
+        if ($win.hasClass('sbgm-cfg-open')) toggleWindowSettings(false);
         S().window.collapsed = !S().window.collapsed;
         save();
         applyWindowGeometry();
@@ -1927,11 +1970,19 @@ function buildSettingsPanel() {
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
+      <div class="sbgm-settings-away" id="sbgm_settings_away">플레이어 창에서 설정을 열어 두었어요. <span class="menu_button" id="sbgm_settings_back">여기로 가져오기</span></div>
+      <div class="sbgm-settings-body" id="sbgm_settings_body">
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_enabled"> 사용하기</label>
       <div class="sbgm-s-row">
         <div class="menu_button" id="sbgm_s_toggle_window"><i class="fa-solid fa-window-restore"></i> 플레이어 창 열기/닫기</div>
         <div class="menu_button" id="sbgm_s_reset_window"><i class="fa-solid fa-arrows-to-dot"></i> 창 위치 초기화</div>
       </div>
+
+      <h4>창</h4>
+      <label for="sbgm_s_opacity">불투명도 <b id="sbgm_s_opacity_v">100%</b></label>
+      <input type="range" id="sbgm_s_opacity" min="15" max="100" step="5">
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_hoversolid"> 마우스를 올리면 선명하게</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_shadow"> 창 그림자</label>
 
       <h4>판단</h4>
       <label for="sbgm_s_profile">판단에 쓸 연결 프로필</label>
@@ -2013,12 +2064,23 @@ function buildSettingsPanel() {
         <div class="menu_button" id="sbgm_s_clear_hist"><i class="fa-solid fa-clock-rotate-left"></i> 기록 비우기</div>
         <div class="menu_button" id="sbgm_s_clear_block"><i class="fa-solid fa-ban"></i> 안 듣기 목록 비우기 (<span id="sbgm_s_block_n">0</span>)</div>
       </div>
+      </div>
     </div>
   </div>
 </div>`;
     $('#extensions_settings2').append(html);
 
     $('#sbgm_s_enabled').on('change', function () { setEnabled(this.checked); });
+    $('#sbgm_s_opacity').on('input', function () {
+        S().window.opacity = clampNum(this.value, 15, 100, 100);
+        this.style.setProperty('--p', `${((S().window.opacity - 15) / 85) * 100}%`);
+        $('#sbgm_s_opacity_v').text(`${S().window.opacity}%`);
+        applyLook();
+        save();
+    });
+    $('#sbgm_s_hoversolid').on('change', function () { S().window.hoverSolid = this.checked; applyLook(); save(); });
+    $('#sbgm_s_shadow').on('change', function () { S().window.shadow = this.checked; applyLook(); save(); });
+    $('#sbgm_settings_back').on('click', () => toggleWindowSettings(false));
     $('#sbgm_s_toggle_window').on('click', () => setWindowOpen(!S().windowOpen));
     $('#sbgm_s_reset_window').on('click', () => {
         Object.assign(S().window, { x: null, y: null, w: 340, h: 560, collapsed: false });
@@ -2107,6 +2169,10 @@ function syncSettingsPanel() {
     const s = S();
     const { cfg, perChar } = genreCfg();
     $('#sbgm_s_enabled').prop('checked', s.enabled);
+    $('#sbgm_s_opacity').val(s.window.opacity)[0]?.style.setProperty('--p', `${((s.window.opacity - 15) / 85) * 100}%`);
+    $('#sbgm_s_opacity_v').text(`${s.window.opacity}%`);
+    $('#sbgm_s_hoversolid').prop('checked', s.window.hoverSolid);
+    $('#sbgm_s_shadow').prop('checked', s.window.shadow);
     $('#sbgm_s_mode').val(s.mode);
     $('#sbgm_s_user').val(s.userMsgs);
     $('#sbgm_s_ai').val(s.aiMsgs);
