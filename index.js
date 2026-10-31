@@ -65,6 +65,7 @@ const DEFAULTS = {
     aiMsgs: 2, // 판단에 넣을 AI 답변 수
     minGap: 2,
     preferShort: true, // 15분 이하 단일 곡 우선
+    sortBy: 'views', // views | relevance
     searchSource: 'st', // st | api
     apiKey: '',
     volume: 60,
@@ -128,10 +129,29 @@ const fmtTime = (sec) => {
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
     return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
 };
+// "조회수 38,643회", "3.8만", "1.2M views", "21K" → 숫자. 실시간 방송("시청 중", "watching")은 0
+function parseViews(text) {
+    const t = String(text || '');
+    if (!t) return null;
+    if (/시청\s*중|watching|대기\s*중|waiting/i.test(t)) return 0;
+    if (/없음|no views/i.test(t)) return 0;
+    const m = t.match(/(\d[\d,.]*)\s*(억|만|천|[KMB](?![a-z]))?/i);
+    if (!m) return null;
+    const n = m[2] ? parseFloat(m[1].replace(/,/g, '')) : Number(m[1].replace(/[,.]/g, ''));
+    const mul = { 억: 1e8, 만: 1e4, 천: 1e3, k: 1e3, m: 1e6, b: 1e9 }[String(m[2] || '').toLowerCase()] || 1;
+    return Math.round(n * mul);
+}
+function fmtViews(n) {
+    if (n === null || n === undefined) return '';
+    if (n === 0) return '';
+    if (n >= 1e8) return `조회수 ${(n / 1e8).toFixed(n >= 1e9 ? 0 : 1).replace(/\.0$/, '')}억`;
+    if (n >= 1e4) return `조회수 ${(n / 1e4).toFixed(n >= 1e5 ? 0 : 1).replace(/\.0$/, '')}만`;
+    return `조회수 ${n.toLocaleString()}`;
+}
 const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
 const textOf = (t) => t?.simpleText ?? t?.content ?? (Array.isArray(t?.runs) ? t.runs.map((r) => r.text).join('') : '') ?? '';
 const notify = (type, msg) => { try { toastr[type](msg, 'Scene BGM', { timeOut: 3500 }); } catch { console.log(LOG, msg); } };
-const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '' });
+const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', views: t.views ?? null, thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '' });
 
 function currentCharKey() {
     const c = ctx();
@@ -182,6 +202,7 @@ function collectVideos(root, excludeId = null) {
                 title: textOf(vr.title),
                 channel: textOf(vr.ownerText || vr.longBylineText || vr.shortBylineText),
                 duration: textOf(vr.lengthText),
+                views: parseViews(textOf(vr.viewCountText) || textOf(vr.shortViewCountText)),
                 thumb: thumbOf(vr.videoId),
             });
         }
@@ -191,12 +212,14 @@ function collectVideos(root, excludeId = null) {
             const meta = lv.metadata?.lockupMetadataViewModel;
             const rows = meta?.metadata?.contentMetadataViewModel?.metadataRows || [];
             const channel = textOf(rows?.[0]?.metadataParts?.[0]?.text);
+            const viewText = textOf(rows?.[1]?.metadataParts?.[0]?.text);
             const durMatch = JSON.stringify(lv.contentImage || {}).match(/"text":"(\d{1,2}:\d{2}(?::\d{2})?)"/);
             out.push({
                 id: lv.contentId,
                 title: textOf(meta?.title),
                 channel,
                 duration: durMatch?.[1] || '',
+                views: parseViews(viewText),
                 thumb: thumbOf(lv.contentId),
             });
         }
@@ -227,13 +250,34 @@ async function searchApi(query) {
         if (reason === 'quotaExceeded') throw new Error('YouTube API 오늘 할당량을 다 썼어요. 검색 방식을 "실리태번 서버"로 바꿔보세요');
         throw new Error(`YouTube API 오류: ${json?.error?.message || reason}`);
     }
-    return (json.items || []).filter((it) => it.id?.videoId).map((it) => ({
+    const items = (json.items || []).filter((it) => it.id?.videoId).map((it) => ({
         id: it.id.videoId,
         title: decodeHtml(it.snippet.title),
         channel: decodeHtml(it.snippet.channelTitle),
         duration: '',
+        views: null,
         thumb: it.snippet.thumbnails?.medium?.url || thumbOf(it.id.videoId),
     }));
+    // 조회수·길이는 search에 없어서 videos로 한 번 더 (1유닛)
+    try {
+        const v = new URL('https://www.googleapis.com/youtube/v3/videos');
+        v.search = new URLSearchParams({ part: 'statistics,contentDetails', id: items.map((x) => x.id).join(','), key: s.apiKey.trim() }).toString();
+        const vj = await (await fetch(v)).json();
+        const byId = Object.fromEntries((vj.items || []).map((x) => [x.id, x]));
+        for (const it of items) {
+            const d = byId[it.id];
+            if (!d) continue;
+            it.views = Number(d.statistics?.viewCount ?? 0);
+            const m = String(d.contentDetails?.duration || '').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+            if (m) {
+                const [h, mi, se] = [m[1], m[2], m[3]].map((x) => Number(x || 0));
+                it.duration = h ? `${h}:${String(mi).padStart(2, '0')}:${String(se).padStart(2, '0')}` : `${mi}:${String(se).padStart(2, '0')}`;
+            }
+        }
+    } catch (e) {
+        console.warn(LOG, 'video details failed', e);
+    }
+    return items;
 }
 
 async function searchVideos(query) {
@@ -266,6 +310,10 @@ const durSec = (d) => String(d || '').split(':').reduce((a, x) => a * 60 + Numbe
 
 function filterFresh(items) {
     const s = S();
+    if (s.sortBy === 'views') {
+        // 안정 정렬: 조회수가 같거나 모르면 유튜브 순서 유지
+        items = items.map((v, i) => ({ v, i })).sort((a, b) => ((b.v.views ?? -1) - (a.v.views ?? -1)) || (a.i - b.i)).map((x) => x.v);
+    }
     if (s.preferShort) {
         const short = items.filter((v) => { const d = durSec(v.duration); return d > 0 && d <= 15 * 60; });
         const long = items.filter((v) => !short.includes(v));
@@ -1034,7 +1082,7 @@ function rowHtml(t, i, tab) {
     return `
 <div class="sbgm-row${isCur ? ' sbgm-cur' : ''}" data-i="${i}" title="${esc(t.title)}">
   <div class="sbgm-thumb"><img loading="lazy" src="${esc(t.thumb || thumbOf(t.id))}" alt="">${t.duration ? `<span>${esc(t.duration)}</span>` : ''}${isCur ? '<i class="fa-solid fa-volume-high"></i>' : ''}</div>
-  <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc(t.channel || '')}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}${tab === 'saved' && s.window.likeScope === 'all' && t.chatName ? ` · ${esc(t.chatName)}` : ''}</div></div>
+  <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc([t.channel, fmtViews(t.views)].filter(Boolean).join(' · '))}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}${tab === 'saved' && s.window.likeScope === 'all' && t.chatName ? ` · ${esc(t.chatName)}` : ''}</div></div>
   <div class="sbgm-row-acts">
     <button class="sbgm-row-act" data-act="save" title="${liked ? '좋아요 취소' : '좋아요 (이 채팅에 기록)'}" aria-pressed="${liked}">${heartSvg(liked)}</button>
     <a class="sbgm-row-act" href="${ytUrl(t.id)}" target="_blank" rel="noopener" title="유튜브에서 열기"><i class="fa-brands fa-youtube"></i></a>
@@ -1221,6 +1269,11 @@ function buildSettingsPanel() {
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_inst"> 연주곡만 (가사 없는 곡)</label>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_strict"> 장르 고정 (장면이 달라도 안 벗어남)</label>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_short"> 한 곡짜리 우선 (몇 시간짜리 모음 영상은 뒤로)</label>
+      <label for="sbgm_s_sort">고르는 순서</label>
+      <select id="sbgm_s_sort" class="text_pole">
+        <option value="views">조회수 높은 순 (검색 결과 안에서)</option>
+        <option value="relevance">유튜브 검색 순서 그대로</option>
+      </select>
 
       <h4>유튜브 검색</h4>
       <select id="sbgm_s_source" class="text_pole">
@@ -1277,6 +1330,7 @@ function buildSettingsPanel() {
     $('#sbgm_s_inst').on('change', function () { genreCfg().cfg.instrumentalOnly = this.checked; save(); renderGenres(); });
     $('#sbgm_s_strict').on('change', function () { genreCfg().cfg.strict = this.checked; save(); });
     $('#sbgm_s_short').on('change', function () { S().preferShort = this.checked; state.cache.clear(); save(); });
+    $('#sbgm_s_sort').on('change', function () { S().sortBy = this.value; save(); });
 
     $('#sbgm_s_source').on('change', function () { S().searchSource = this.value; save(); syncSettingsPanel(); });
     $('#sbgm_s_key').on('input', function () { S().apiKey = this.value.trim(); save(); });
@@ -1327,6 +1381,7 @@ function syncSettingsPanel() {
     $('#sbgm_s_inst').prop('checked', cfg.instrumentalOnly);
     $('#sbgm_s_strict').prop('checked', cfg.strict);
     $('#sbgm_s_short').prop('checked', s.preferShort);
+    $('#sbgm_s_sort').val(s.sortBy);
     $('#sbgm_s_source').val(s.searchSource);
     $('#sbgm_s_key').val(s.apiKey).toggle(s.searchSource === 'api');
     $('#sbgm_s_source_note').html(s.searchSource === 'api'
