@@ -61,7 +61,8 @@ const DEFAULTS = {
     mode: 'auto', // auto | suggest | manual
     profileId: '', // '' = 메인 API
     maxTokens: 500,
-    contextMessages: 6,
+    userMsgs: 1, // 판단에 넣을 내 메시지 수
+    aiMsgs: 2, // 판단에 넣을 AI 답변 수
     minGap: 2,
     preferShort: true, // 15분 이하 단일 곡 우선
     searchSource: 'st', // st | api
@@ -302,18 +303,46 @@ function genreRules() {
     return lines.join('\n');
 }
 
-function buildPrompt(force, reject = null) {
+// 긴 메시지는 앞과 끝을 남기고 가운데를 줄임 (끝부분이 지금 장면이라 더 길게)
+function clip(text, max) {
+    if (text.length <= max) return text;
+    const head = Math.round(max * 0.3);
+    return `${text.slice(0, head)} … ${text.slice(text.length - (max - head))}`;
+}
+
+// 최근 대화에서 내 메시지 N개 + AI 답변 M개를 시간순으로
+function collectScene() {
     const s = S();
-    const c = ctx();
-    const recent = (c.chat || [])
-        .filter((m) => !m.is_system && m.mes)
-        .slice(-s.contextMessages)
-        .map((m) => `${m.name}: ${cleanMes(m.mes).slice(0, 900)}`)
-        .join('\n\n');
+    const chat = (ctx().chat || []).filter((m) => !m.is_system && m.mes);
+    const wantUser = Number(s.userMsgs) || 0;
+    const wantAi = Math.max(1, Number(s.aiMsgs) || 1);
+    let u = 0, a = 0;
+    const picked = [];
+    for (let i = chat.length - 1; i >= 0 && i >= chat.length - 40; i--) {
+        const m = chat[i];
+        if (m.is_user ? u < wantUser : a < wantAi) {
+            picked.unshift(m);
+            if (m.is_user) u++; else a++;
+        }
+        if (u >= wantUser && a >= wantAi) break;
+    }
+    const lastAi = picked.findLastIndex((m) => !m.is_user);
+    return picked.map((m, i) => {
+        const tag = m.is_user ? '사용자' : (i === lastAi ? '최신 AI 답변 ← 지금 장면' : '이전 AI 답변');
+        const body = clip(cleanMes(m.mes), m.is_user ? 1000 : 2400);
+        return `[${tag}] ${m.name}:\n${body}`;
+    }).join('\n\n');
+}
+
+function buildPrompt(force, reject = null) {
+    const recent = collectScene();
 
     const system = [
         'You are the music supervisor for an ongoing interactive story (roleplay chat).',
-        'Read the latest scene and choose background music that fits its mood, setting and pacing.',
+        'The scene is given oldest to newest, as the user\'s messages and the AI\'s replies.',
+        'The LATEST AI reply is the present moment: weigh it most. Use the earlier reply and the user\'s message to understand where the scene came from and where it is heading.',
+        'Consider: location and setting, time of day and weather, emotional tone, tension and pacing, and the dynamic between the characters.',
+        'Choose music that underscores the feeling of the moment, not a literal description of objects in the text.',
         'Answer with ONLY a JSON object, no other text:',
         '{"change": true|false, "mood": "2-5 English words", "query": "YouTube search query, 3-7 English words, describe the sound (genre + mood + instrument), no artist names unless essential", "reason": "한국어 한 문장으로 선곡 이유"}',
         force
@@ -336,7 +365,7 @@ function buildPrompt(force, reject = null) {
         likedNote,
         cur + switched + rejectNote,
         '',
-        '### Latest scene',
+        '### Scene (oldest → newest)',
         recent || '(empty)',
         '',
         'JSON:',
@@ -1175,7 +1204,8 @@ function buildSettingsPanel() {
         <option value="manual">수동 — 버튼 눌렀을 때만</option>
       </select>
       <div class="sbgm-s-grid">
-        <label>읽을 최근 메시지 수 <input type="number" class="text_pole" id="sbgm_s_ctx" min="1" max="30"></label>
+        <label>읽을 내 메시지 수 <input type="number" class="text_pole" id="sbgm_s_user" min="0" max="10"></label>
+        <label>읽을 AI 답변 수 <input type="number" class="text_pole" id="sbgm_s_ai" min="1" max="10"></label>
         <label>최소 간격 (AI 답변 수) <input type="number" class="text_pole" id="sbgm_s_gap" min="1" max="50"></label>
         <label>판단 최대 토큰 <input type="number" class="text_pole" id="sbgm_s_tokens" min="100" max="8000" step="50"></label>
       </div>
@@ -1220,7 +1250,8 @@ function buildSettingsPanel() {
     });
     $('#sbgm_s_profile').on('focus mousedown', fillProfiles).on('change', function () { S().profileId = this.value; save(); });
     $('#sbgm_s_mode').on('change', function () { S().mode = this.value; state.suggestion = null; save(); renderAll(); });
-    $('#sbgm_s_ctx').on('change', function () { S().contextMessages = clampNum(this.value, 1, 30, 6); save(); });
+    $('#sbgm_s_user').on('change', function () { S().userMsgs = clampNum(this.value, 0, 10, 1); this.value = S().userMsgs; save(); });
+    $('#sbgm_s_ai').on('change', function () { S().aiMsgs = clampNum(this.value, 1, 10, 2); this.value = S().aiMsgs; save(); });
     $('#sbgm_s_gap').on('change', function () { S().minGap = clampNum(this.value, 1, 50, 2); save(); });
     $('#sbgm_s_tokens').on('change', function () { S().maxTokens = clampNum(this.value, 100, 8000, 500); save(); });
 
@@ -1283,7 +1314,8 @@ function syncSettingsPanel() {
     const { cfg, perChar } = genreCfg();
     $('#sbgm_s_enabled').prop('checked', s.enabled);
     $('#sbgm_s_mode').val(s.mode);
-    $('#sbgm_s_ctx').val(s.contextMessages);
+    $('#sbgm_s_user').val(s.userMsgs);
+    $('#sbgm_s_ai').val(s.aiMsgs);
     $('#sbgm_s_gap').val(s.minGap);
     $('#sbgm_s_tokens').val(s.maxTokens);
     $('#sbgm_s_perchar').prop('checked', perChar);
