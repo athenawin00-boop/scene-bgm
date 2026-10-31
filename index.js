@@ -122,6 +122,7 @@ function S() {
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (s[k] === undefined) s[k] = structuredClone(v);
     }
+    if (s.cacheVer !== 2) { s.embedOk = {}; s.aiVideo = {}; s.cacheVer = 2; }
     for (const [k, v] of Object.entries(DEFAULTS.window)) if (s.window[k] === undefined) s.window[k] = v;
     for (const [k, v] of Object.entries(DEFAULT_GENRE_CONFIG)) if (s.genre[k] === undefined) s.genre[k] = structuredClone(v);
     return s;
@@ -681,8 +682,9 @@ async function ensurePlayer(firstId) {
             onError: (e) => {
                 console.warn(LOG, 'player error', e.data, state.current?.id);
                 if (state.current && [101, 150, 153].includes(e.data)) rememberEmbed(state.current.id, false);
-                if (state.errorSkips++ < 5) {
-                    setStatus(`재생 불가 영상 건너뜀 (오류 ${e.data})`, 'error');
+                if (state.errorSkips++ < 10) {
+                    state.skipped.embed = (state.skipped.embed || 0) + 1;
+                    console.log(LOG, `skip (player error ${e.data})`, state.current?.title);
                     next(true);
                 } else {
                     setStatus(`재생이 계속 실패해요 (오류 ${e.data})`, 'error');
@@ -735,9 +737,14 @@ async function inspectVideo(id, channel = '') {
     try {
         const html = await visit(ytUrl(id));
         const m = html.match(/"playableInEmbed"\s*:\s*(true|false)/);
-        const st = html.match(/"playabilityStatus"\s*:\s*\{\s*"status"\s*:\s*"(\w+)"/);
-        const embed = (m ? m[1] === 'true' : true) && (!st || st[1] === 'OK');
-        rememberEmbed(id, embed);
+        const st = html.match(/"playabilityStatus"\s*:\s*\{\s*"status"\s*:\s*"(\w+)"/)?.[1];
+        // 서버에서 열면 유튜브가 '로봇 확인'(LOGIN_REQUIRED) 페이지를 줄 때가 있음 → 그땐 판단하지 않고 일단 재생해 봄
+        // 확실한 경우만 막음: 정상 페이지에서 playableInEmbed:false, 또는 삭제·비공개(ERROR)
+        let embed = true;
+        if (st === 'ERROR') embed = false;
+        else if (st === 'OK' && m) embed = m[1] === 'true';
+        if (st === 'OK' || st === 'ERROR') rememberEmbed(id, embed);
+        else console.log(LOG, 'inspect: no verdict', id, st || 'no status');
         let desc = '';
         const dm = html.match(/"shortDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/);
         if (dm) { try { desc = JSON.parse(`"${dm[1]}"`); } catch { desc = dm[1]; } }
