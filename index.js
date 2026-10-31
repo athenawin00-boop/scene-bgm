@@ -1443,6 +1443,9 @@ function buildWindow() {
     <div class="sbgm-list" id="sbgm_list"></div>
   </div>
 </div>
+  <div class="sbgm-rz" data-dir="e"></div><div class="sbgm-rz" data-dir="w"></div><div class="sbgm-rz" data-dir="s"></div>
+  <div class="sbgm-rz" data-dir="se"></div><div class="sbgm-rz" data-dir="sw"></div><div class="sbgm-rz" data-dir="n"></div>
+  <div class="sbgm-grip-corner" aria-hidden="true"></div>
 </div>`;
     $('body').append(html);
     $win = $('#sbgm_window');
@@ -1459,10 +1462,12 @@ function applyWindowGeometry() {
     el.classList.toggle('sbgm-hidden', !s.windowOpen);
     if (isMobile()) {
         el.style.left = el.style.width = el.style.height = '';
+        if (w.mh) el.style.setProperty('--sbgm-mh', `${Math.min(Math.max(w.mh, 220), window.innerHeight - 120)}px`);
+        else el.style.removeProperty('--sbgm-mh');
         positionMobile();
         return;
     }
-    const width = Math.min(Math.max(w.w || 340, 280), window.innerWidth - 16);
+    const width = Math.min(Math.max(w.w || 340, 320), window.innerWidth - 16);
     el.style.width = `${width}px`;
     el.style.height = w.collapsed ? '' : `${Math.min(Math.max(w.h || 560, 320), window.innerHeight - 16)}px`;
     const rect = el.getBoundingClientRect();
@@ -1555,15 +1560,52 @@ function bindWindow() {
     head.addEventListener('pointercancel', endDrag);
 
     // 크기 조절 저장
-    const ro = new ResizeObserver(() => {
-        if (isMobile() || S().window.collapsed || !S().windowOpen) return;
+    // 크기 조절: 가장자리·모서리를 끌기 (PC는 좌·우·아래·두 아래 모서리, 모바일은 위쪽 가장자리로 높이)
+    let rz = null;
+    $(el).on('pointerdown', '.sbgm-rz', function (e) {
+        if (e.button !== 0) return;
+        const dir = this.dataset.dir;
+        const mobile = isMobile();
+        if (mobile !== (dir === 'n')) return;
+        if (S().window.collapsed && !mobile) return;
         const r = el.getBoundingClientRect();
-        if (r.width < 50) return;
-        S().window.w = Math.round(r.width);
-        S().window.h = Math.round(r.height);
-        save();
+        rz = { dir, x: e.clientX, y: e.clientY, l: r.left, t: r.top, w: r.width, h: r.height, id: e.pointerId, target: this };
+        this.setPointerCapture(e.pointerId);
+        el.classList.add('sbgm-resizing');
+        e.preventDefault();
+        e.stopPropagation();
     });
-    ro.observe(el);
+    $(el).on('pointermove', '.sbgm-rz', (e) => {
+        if (!rz) return;
+        const dx = e.clientX - rz.x, dy = e.clientY - rz.y;
+        const minW = 320, minH = 220;
+        if (rz.dir === 'n') {
+            // 모바일: 아래(입력창)에 붙어 있으니 위로 끌면 커짐
+            const h = Math.min(Math.max(rz.h - dy, minH), window.innerHeight - 120);
+            S().window.mh = Math.round(h);
+            el.style.setProperty('--sbgm-mh', `${h}px`);
+            positionMobile();
+            return;
+        }
+        let { l, w, h } = rz;
+        if (rz.dir.includes('e')) w = Math.min(Math.max(rz.w + dx, minW), window.innerWidth - rz.l - 4);
+        if (rz.dir.includes('w')) { w = Math.min(Math.max(rz.w - dx, minW), rz.l + rz.w - 4); l = rz.l + rz.w - w; }
+        if (rz.dir.includes('s')) h = Math.min(Math.max(rz.h + dy, minH), window.innerHeight - rz.t - 4);
+        el.style.left = `${l}px`;
+        el.style.width = `${w}px`;
+        el.style.height = `${h}px`;
+    });
+    const endRz = () => {
+        if (!rz) return;
+        rz = null;
+        el.classList.remove('sbgm-resizing');
+        if (!isMobile()) {
+            const r = el.getBoundingClientRect();
+            Object.assign(S().window, { w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.left), y: Math.round(r.top) });
+        }
+        save();
+    };
+    $(el).on('pointerup pointercancel', '.sbgm-rz', endRz);
     window.addEventListener('resize', () => applyWindowGeometry());
     window.visualViewport?.addEventListener('resize', () => positionMobile());
     window.visualViewport?.addEventListener('scroll', () => positionMobile());
