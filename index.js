@@ -1419,7 +1419,7 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)" aria-pressed="false">${heartSvg(false)}</button>
     <button class="sbgm-icon" id="sbgm_repeat" title="반복"><i class="fa-solid fa-repeat"></i></button>
     <span class="sbgm-block-wrap"><button class="sbgm-icon" id="sbgm_block" title="다시 안 듣기 (곡 / 채널)"><i class="fa-solid fa-ban"></i></button><div class="sbgm-block-menu" id="sbgm_block_menu"></div></span>
-    <span class="sbgm-vol"><button class="sbgm-icon" id="sbgm_vol_btn" title="볼륨 (휠로도 조절)"><i class="fa-solid fa-volume-low"></i></button><div class="sbgm-vol-pop" id="sbgm_vol_pop"><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"><span id="sbgm_vol_v">60</span></div></span>
+    <span class="sbgm-vol"><button class="sbgm-icon" id="sbgm_vol_btn" title="음소거"><i class="fa-solid fa-volume-low"></i></button><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></span>
   </div>
 
   <div class="sbgm-body">
@@ -1624,12 +1624,10 @@ function bindWindow() {
         renderVolume();
     };
     $('#sbgm_vol').on('input', function () { setVol(Number(this.value)); });
-    $('#sbgm_vol_btn').on('click', (e) => {
-        e.stopPropagation();
-        $('#sbgm_vol_pop').toggleClass('open');
+    // 스피커: 음소거 ↔ 이전 음량
+    $('#sbgm_vol_btn').on('click', () => {
+        if (S().volume > 0) { state.volBeforeMute = S().volume; setVol(0); } else setVol(state.volBeforeMute || 60);
     });
-    $('#sbgm_vol_pop').on('click', (e) => e.stopPropagation());
-    $(document).on('click', () => $('#sbgm_vol_pop').removeClass('open'));
     $win.find('.sbgm-vol').on('wheel', (e) => {
         e.preventDefault();
         setVol(S().volume + (e.originalEvent.deltaY < 0 ? 5 : -5));
@@ -1900,9 +1898,9 @@ ${sg.reason ? `<div class="sbgm-suggest-reason">${esc(sg.reason)}</div>` : ''}
 function renderVolume() {
     const v = S().volume;
     $('#sbgm_vol').val(v)[0]?.style.setProperty('--p', `${v}%`);
-    $('#sbgm_vol_v').text(v);
     $('#sbgm_vol_btn i').attr('class', `fa-solid ${v === 0 ? 'fa-volume-xmark' : v < 50 ? 'fa-volume-low' : 'fa-volume-high'}`);
-    $('#sbgm_vol_btn').attr('title', `볼륨 ${v} (휠로도 조절)`);
+    $('#sbgm_vol_btn').attr('title', v === 0 ? '음소거 해제' : `음소거 (지금 ${v})`);
+    $('#sbgm_vol').attr('title', `볼륨 ${v} · 휠로도 조절`);
 }
 
 function renderControls() {

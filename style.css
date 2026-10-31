@@ -317,56 +317,76 @@
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
 }
-/* 슬라이더: 테마 영향 없이 직접 그림. --p = 채워진 비율 */
+/* 슬라이더: 테마의 range 규칙(크기·여백·모양)에 영향받지 않게 전부 !important로 직접 그림. --p = 채워진 비율
+   트랙 높이를 손잡이 높이와 같게 두고 선은 배경으로 가운데에 그려서, 손잡이가 항상 선 한가운데 오게 함 */
 #sbgm_window input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
+    --sbgm-thumb: 12px;
+    -webkit-appearance: none !important;
+    appearance: none !important;
     flex: 1;
     min-width: 0;
-    height: 18px;
-    margin: 0;
-    padding: 0;
+    height: 18px !important;
+    margin: 0 !important;
+    padding: 0 !important;
     background: transparent !important;
     border: 0 !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
+    outline: none;
     cursor: pointer;
     touch-action: none;
+    vertical-align: middle;
 }
 #sbgm_window input[type="range"]::-webkit-slider-runnable-track {
-    height: 4px;
-    border-radius: 2px;
-    background: linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%));
+    -webkit-appearance: none !important;
+    height: var(--sbgm-thumb) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background:
+        linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%))
+        center / 100% 4px no-repeat !important;
 }
 #sbgm_window input[type="range"]::-moz-range-track {
-    height: 4px;
-    border-radius: 2px;
-    background: linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%));
+    height: 4px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    box-shadow: none !important;
+    background: linear-gradient(to right, var(--sbgm-fg) var(--p, 0%), color-mix(in srgb, var(--sbgm-fg) 20%, transparent) var(--p, 0%)) !important;
 }
+#sbgm_window input[type="range"]::-moz-range-progress { background: transparent !important; }
 #sbgm_window input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 12px;
-    height: 12px;
-    margin-top: -4px;
-    border: 0;
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: var(--sbgm-thumb) !important;
+    height: var(--sbgm-thumb) !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
     border-radius: 50% !important;
-    background: var(--sbgm-fg);
+    box-shadow: none !important;
+    background: var(--sbgm-fg) !important;
+    transform: none !important;
 }
 #sbgm_window input[type="range"]::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
-    border: 0;
-    border-radius: 50%;
-    background: var(--sbgm-fg);
+    width: var(--sbgm-thumb) !important;
+    height: var(--sbgm-thumb) !important;
+    border: 0 !important;
+    border-radius: 50% !important;
+    box-shadow: none !important;
+    background: var(--sbgm-fg) !important;
 }
 .sbgm-controls {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 2px;
+    gap: 0;
     padding: 4px 8px 8px;
     flex: 0 0 auto;
 }
-.sbgm-controls .sbgm-icon { width: 30px; height: 32px; font-size: 14px; }
+.sbgm-controls .sbgm-icon { width: 29px; height: 32px; font-size: 14px; }
 .sbgm-controls .sbgm-play {
     width: 40px;
     height: 40px;
@@ -384,28 +404,9 @@
 #sbgm_window .sbgm-controls .sbgm-play:hover { opacity: 0.85; }
 #sbgm_find { color: var(--sbgm-accent); }
 .sbgm-busy #sbgm_find i { animation: sbgm-pulse 0.9s infinite; }
-.sbgm-vol { position: relative; display: inline-flex; }
-.sbgm-vol-pop {
-    display: none;
-    position: absolute;
-    bottom: calc(100% + 6px);
-    right: -6px;
-    z-index: 5;
-    align-items: center;
-    gap: 8px;
-    width: 150px;
-    padding: 8px 10px;
-    background: var(--sbgm-solid-bg);
-    border: 1px solid var(--sbgm-border);
-    border-radius: 9px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
-    font-size: 11px;
-    color: var(--sbgm-dim);
-    font-variant-numeric: tabular-nums;
-}
-.sbgm-vol-pop.open { display: flex; }
-#sbgm_window .sbgm-vol-pop input[type="range"] { flex: 1; width: auto; }
-#sbgm_vol_v { width: 22px; text-align: right; }
+.sbgm-vol { display: flex; align-items: center; gap: 2px; flex: 1 1 70px; min-width: 56px; max-width: 110px; margin-left: 2px; }
+.sbgm-controls > .sbgm-icon, .sbgm-controls > .sbgm-block-wrap { flex: 0 0 auto; }
+#sbgm_window .sbgm-vol .sbgm-icon { width: 24px; flex: 0 0 24px; color: var(--sbgm-dim); }
 
 /* 본문 (장르 + 탭 + 목록) */
 /* 머리 아래 전체가 한 번에 스크롤 (판단·장르를 펼쳐도 아래 목록까지 내려갈 수 있게) */
@@ -660,9 +661,7 @@
     /* 휴대폰은 기기 볼륨으로 조절 (iOS는 웹에서 볼륨 변경이 안 됨) */
     .sbgm-vol { display: none; }
     .sbgm-mode button { padding: 4px 9px !important; font-size: 12px !important; }
-    #sbgm_window input[type="range"] { height: 28px; }
-    #sbgm_window input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; margin-top: -7px; }
-    #sbgm_window input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; }
+    #sbgm_window input[type="range"] { --sbgm-thumb: 18px; height: 28px !important; }
     .sbgm-now { grid-template-columns: 120px 1fr; }
     .sbgm-collapsed .sbgm-now { grid-template-columns: 96px 1fr; }
     .sbgm-tabs button { padding: 9px 2px 8px; font-size: 12.5px; }
