@@ -1419,7 +1419,7 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)" aria-pressed="false">${heartSvg(false)}</button>
     <button class="sbgm-icon" id="sbgm_repeat" title="반복"><i class="fa-solid fa-repeat"></i></button>
     <span class="sbgm-block-wrap"><button class="sbgm-icon" id="sbgm_block" title="다시 안 듣기 (곡 / 채널)"><i class="fa-solid fa-ban"></i></button><div class="sbgm-block-menu" id="sbgm_block_menu"></div></span>
-    <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
+    <span class="sbgm-vol"><button class="sbgm-icon" id="sbgm_vol_btn" title="볼륨 (휠로도 조절)"><i class="fa-solid fa-volume-low"></i></button><div class="sbgm-vol-pop" id="sbgm_vol_pop"><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"><span id="sbgm_vol_v">60</span></div></span>
   </div>
 
   <div class="sbgm-body">
@@ -1617,11 +1617,22 @@ function bindWindow() {
     });
     $(document).on('click', () => $('#sbgm_block_menu').hide());
 
-    $('#sbgm_vol').on('input', function () {
-        S().volume = Number(this.value);
-        this.style.setProperty('--p', `${this.value}%`);
+    const setVol = (v) => {
+        S().volume = Math.max(0, Math.min(100, Math.round(v)));
         try { state.player?.setVolume?.(S().volume); } catch { /* */ }
         save();
+        renderVolume();
+    };
+    $('#sbgm_vol').on('input', function () { setVol(Number(this.value)); });
+    $('#sbgm_vol_btn').on('click', (e) => {
+        e.stopPropagation();
+        $('#sbgm_vol_pop').toggleClass('open');
+    });
+    $('#sbgm_vol_pop').on('click', (e) => e.stopPropagation());
+    $(document).on('click', () => $('#sbgm_vol_pop').removeClass('open'));
+    $win.find('.sbgm-vol').on('wheel', (e) => {
+        e.preventDefault();
+        setVol(S().volume + (e.originalEvent.deltaY < 0 ? 5 : -5));
     });
     const seek = document.getElementById('sbgm_seek');
     seek.addEventListener('pointerdown', () => { state.seeking = true; });
@@ -1886,12 +1897,20 @@ ${sg.reason ? `<div class="sbgm-suggest-reason">${esc(sg.reason)}</div>` : ''}
 </div>`).show();
 }
 
+function renderVolume() {
+    const v = S().volume;
+    $('#sbgm_vol').val(v)[0]?.style.setProperty('--p', `${v}%`);
+    $('#sbgm_vol_v').text(v);
+    $('#sbgm_vol_btn i').attr('class', `fa-solid ${v === 0 ? 'fa-volume-xmark' : v < 50 ? 'fa-volume-low' : 'fa-volume-high'}`);
+    $('#sbgm_vol_btn').attr('title', `볼륨 ${v} (휠로도 조절)`);
+}
+
 function renderControls() {
     $('#sbgm_play i').attr('class', `fa-solid ${state.isPlaying ? 'fa-pause' : 'fa-play'}`);
     const saved = state.current && isLikedHere(state.current.id);
     $('#sbgm_save').html(heartSvg(!!saved)).attr('aria-pressed', String(!!saved)).attr('title', saved ? '좋아요 취소' : '좋아요 (이 채팅에 기록)');
     $('#sbgm_quick').toggleClass('sbgm-quick-playing', state.isPlaying).attr('title', state.isPlaying && state.current ? `Scene BGM · ${state.current.title}` : 'Scene BGM');
-    $('#sbgm_vol').val(S().volume)[0]?.style.setProperty('--p', `${S().volume}%`);
+    renderVolume();
     const rep = S().repeat;
     $('#sbgm_repeat').toggleClass('on', rep !== 'off').attr('title', { off: '반복 끔 (누르면 한 곡 반복)', one: '한 곡 반복 (누르면 좋아요 곡 반복)', liked: '좋아요 곡만 반복 (누르면 끔)' }[rep])
         .find('i').attr('class', `fa-solid ${rep === 'liked' ? 'fa-heart-circle-check' : 'fa-repeat'}`);

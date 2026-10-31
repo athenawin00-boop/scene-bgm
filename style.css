@@ -384,8 +384,28 @@
 #sbgm_window .sbgm-controls .sbgm-play:hover { opacity: 0.85; }
 #sbgm_find { color: var(--sbgm-accent); }
 .sbgm-busy #sbgm_find i { animation: sbgm-pulse 0.9s infinite; }
-.sbgm-vol { display: flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--sbgm-dim); font-size: 11px; }
-.sbgm-vol input[type="range"] { width: 58px; flex: 0 0 58px; }
+.sbgm-vol { position: relative; display: inline-flex; }
+.sbgm-vol-pop {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: -6px;
+    z-index: 5;
+    align-items: center;
+    gap: 8px;
+    width: 150px;
+    padding: 8px 10px;
+    background: var(--sbgm-solid-bg);
+    border: 1px solid var(--sbgm-border);
+    border-radius: 9px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+    font-size: 11px;
+    color: var(--sbgm-dim);
+    font-variant-numeric: tabular-nums;
+}
+.sbgm-vol-pop.open { display: flex; }
+#sbgm_window .sbgm-vol-pop input[type="range"] { flex: 1; width: auto; }
+#sbgm_vol_v { width: 22px; text-align: right; }
 
 /* 본문 (장르 + 탭 + 목록) */
 /* 머리 아래 전체가 한 번에 스크롤 (판단·장르를 펼쳐도 아래 목록까지 내려갈 수 있게) */
@@ -556,7 +576,6 @@
     .sbgm-window.sbgm-collapsed { height: auto !important; }
     .sbgm-head { cursor: default; }
     .sbgm-grip { display: none; }
-    .sbgm-vol input[type="range"] { width: 48px; flex-basis: 48px; }
 }
 
 /* 설정 패널 */
