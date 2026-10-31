@@ -69,6 +69,7 @@ const DEFAULTS = {
     pickMode: 'songs', // songs: 실제 곡(아티스트·곡명) 추천 | mood: 분위기 검색
     avoidFree: true, // '무료 BGM / 저작권 없음' 영상 뒤로
     embedOk: {}, // 영상 id → 외부 재생 가능 여부 캐시
+    blockedPlay: 'youtube', // 실리태번 안에서 막힌 곡: skip | youtube(유튜브 창으로 넘기기)
     avoidAi: true, // AI 생성 음악 거르기
     aiVideo: {}, // 영상 id → AI 표시 여부 캐시
     aiChannels: [], // AI 음악으로 확인된 채널 (자동 학습)
@@ -103,6 +104,9 @@ const state = {
     lastDecision: null, // {result, mood, query, reason, thinking, at, source}
     whyOpen: false,
     skipped: {}, // 이번 판단에서 건너뛴 수 { embed, ai }
+    external: null, // { at, count } 유튜브 창으로 넘긴 상태 (창은 실리태번 보안 설정 때문에 조종 불가)
+    extPending: null, // 막혀서 유튜브 창으로 넘길지 묻는 중인 곡 { ...track, mobile? }
+    extReady: null, // 유튜브 창으로 듣는 중에 새로 고른 곡들 { items, label }
     aiSinceChange: 0,
     chatSwitched: false,
     busy: false,
@@ -122,6 +126,7 @@ function S() {
     for (const [k, v] of Object.entries(DEFAULTS)) {
         if (s[k] === undefined) s[k] = structuredClone(v);
     }
+    if (s.blockedPlay === 'ytmusic') s.blockedPlay = 'youtube';
     if (s.cacheVer !== 2) { s.embedOk = {}; s.aiVideo = {}; s.cacheVer = 2; }
     for (const [k, v] of Object.entries(DEFAULTS.window)) if (s.window[k] === undefined) s.window[k] = v;
     for (const [k, v] of Object.entries(DEFAULT_GENRE_CONFIG)) if (s.genre[k] === undefined) s.genre[k] = structuredClone(v);
@@ -332,7 +337,7 @@ function filterFresh(items) {
         const paid = items.filter((v) => !isFree(v));
         if (paid.length) items = [...paid, ...items.filter(isFree)];
     }
-    items = items.filter((v) => s.embedOk[v.id] !== false && !(s.avoidAi && s.aiVideo[v.id]) && !channelBlocked(v));
+    items = items.filter((v) => embedUsable(v.id) && !(s.avoidAi && s.aiVideo[v.id]) && !channelBlocked(v));
     const blocked = new Set(s.blocked);
     const recent = new Set(s.history.slice(0, 8).map((h) => h.id));
     if (state.current) recent.add(state.current.id);
@@ -343,6 +348,9 @@ function filterFresh(items) {
 const FREE_RE = /no\s*copyright|copyright[\s-]*free|royalty[\s-]*free|free\s*(bgm|music|download|to use)|non[\s-]*copyright|ncs\b|저작권\s*(없는|free|프리)|무료\s*(bgm|브금|음악)|무료브금|노카피|\bvlog\s*music/i;
 const isFree = (v) => FREE_RE.test(`${v.title} ${v.channel}`);
 const chKey = (c) => String(c || '').trim().toLowerCase();
+// 막힌 곡을 팝업 창으로 틀 수 있는지 (모바일은 팝업이 새 탭이라 제외)
+const popupMode = () => S().blockedPlay !== 'skip' && !isMobile();
+const embedUsable = (id) => popupMode() || S().embedOk[id] !== false;
 function channelBlocked(v) {
     const s = S();
     const k = chKey(v.channel);
@@ -386,7 +394,7 @@ async function resolveSongs(songs) {
         try {
             const q = [song.artist, song.title].filter(Boolean).join(' ');
             const all = (await searchVideos(q)).filter((v) => !blocked.has(v.id));
-            const usable = (v) => S().embedOk[v.id] !== false && !(S().avoidAi && S().aiVideo[v.id] === true) && !channelBlocked(v);
+            const usable = (v) => embedUsable(v.id) && !(S().avoidAi && S().aiVideo[v.id] === true) && !channelBlocked(v);
             const v = pickBestForSong(song, all.filter(usable));
             if (v) return { ...v, song };
             // 왜 못 썼는지 표시용
@@ -681,7 +689,16 @@ async function ensurePlayer(firstId) {
             },
             onError: (e) => {
                 console.warn(LOG, 'player error', e.data, state.current?.id);
-                if (state.current && [101, 150, 153].includes(e.data)) rememberEmbed(state.current.id, false);
+                const blockedErr = [101, 150, 153].includes(e.data);
+                if (state.current && blockedErr) rememberEmbed(state.current.id, false);
+                if (state.current && blockedErr && popupMode()) {
+                    playExternal(state.current, { recorded: true });
+                    return;
+                }
+                if (blockedErr && isMobile() && S().blockedPlay !== 'skip' && state.current) {
+                    state.extPending = { ...state.current, mobile: true };
+                    renderExternal();
+                }
                 if (state.errorSkips++ < 10) {
                     state.skipped.embed = (state.skipped.embed || 0) + 1;
                     console.log(LOG, `skip (player error ${e.data})`, state.current?.title);
@@ -701,6 +718,7 @@ async function playTrack(track, { pushBack = true } = {}) {
         state.backStack.push(state.current);
         if (state.backStack.length > 50) state.backStack.shift();
     }
+    stopExternal();
     state.current = trackLite(track);
     s.lastTrack = state.current;
     s.history = [state.current, ...s.history.filter((h) => h.id !== track.id)].slice(0, HISTORY_MAX);
@@ -721,6 +739,80 @@ async function playTrack(track, { pushBack = true } = {}) {
         notify('error', e.message);
     }
     if (S().window.tab === 'related') loadRelated();
+}
+
+// ───────── 실리태번 안에서 막힌 곡: 유튜브 창으로 넘기기 ─────────
+// 실리태번은 보안 헤더(COOP same-origin) 때문에 띄운 창을 조종할 수 없음 → 창 하나에 '대기열 전체'를 유튜브 임시 재생목록으로 넘김
+const playlistUrl = (ids) => `https://www.youtube.com/watch_videos?video_ids=${ids.slice(0, 50).join(',')}`;
+
+function openYoutubeWindow(tracks, label) {
+    const ids = [...new Set(tracks.map((t) => t.id))];
+    if (!ids.length) return false;
+    const w = 560, h = 380;
+    const left = Math.max(0, (window.screenX || 0) + (window.outerWidth || 1200) - w - 40);
+    const top = Math.max(0, (window.screenY || 0) + 80);
+    const win = window.open(playlistUrl(ids), '_blank', `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+    if (!win && !isMobile()) return false;
+    try { state.player?.pauseVideo?.(); } catch { /* */ }
+    state.isPlaying = false;
+    state.external = { at: Date.now(), count: ids.length, label: label || '' };
+    state.extPending = null;
+    state.extReady = null;
+    return true;
+}
+
+// 막힌 곡을 만났을 때: 실리태번 안 재생은 멈추고, 유튜브 창으로 넘길지 묻는 칸을 띄움
+function playExternal(track, { recorded = false } = {}) {
+    const s = S();
+    try { state.player?.stopVideo?.(); } catch { /* */ }
+    state.isPlaying = false;
+    if (!recorded || state.current?.id !== track.id) {
+        if (state.current && state.current.id !== track.id) state.backStack.push(state.current);
+        state.current = trackLite(track);
+        s.lastTrack = state.current;
+        s.history = [state.current, ...s.history.filter((h) => h.id !== track.id)].slice(0, HISTORY_MAX);
+        save();
+    }
+    state.extPending = trackLite(track);
+    setStatus('실리태번 안에서 재생이 막힌 곡이에요');
+    renderAll();
+}
+
+function stopExternal() {
+    state.external = null;
+    state.extPending = null;
+    state.extReady = null;
+}
+
+function remainingQueue() {
+    const i = Math.max(0, state.queueIndex);
+    return state.queue.slice(i);
+}
+
+function renderExternal() {
+    const $o = $('#sbgm_ext');
+    const { external: ext, extPending: pend, extReady: ready } = state;
+    $win?.toggleClass('sbgm-external', !!ext);
+    if (ext) { $('#sbgm_t_cur').text('—'); $('#sbgm_t_dur').text(''); $('#sbgm_seek').val(0)[0]?.style.setProperty('--p', '0%'); }
+    if (!ext && !pend) { $o.hide().empty(); return; }
+    const n = remainingQueue().length;
+    if (pend?.mobile) {
+        $o.html(`<div class="sbgm-ext-text">실리태번 안에서 재생이 막힌 곡이라 건너뛰었어요</div>
+<div class="sbgm-ext-btns"><a class="sbgm-ext-btn" href="${ytUrl(pend.id)}" target="_blank" rel="noopener"><i class="fa-brands fa-youtube"></i> 유튜브에서 듣기</a><button class="sbgm-ext-btn ghost" data-ext="dismiss">닫기</button></div>`).show();
+        return;
+    }
+    if (pend) {
+        $o.html(`<div class="sbgm-ext-text">이 곡은 가수·음반사가 다른 사이트 재생을 막아 둬서 여기선 못 틀어요</div>
+<div class="sbgm-ext-btns"><button class="sbgm-ext-btn" data-ext="open"><i class="fa-brands fa-youtube"></i> 유튜브 창에서 듣기${n > 1 ? ` (대기열 ${n}곡)` : ''}</button><button class="sbgm-ext-btn ghost" data-ext="skip">건너뛰기</button></div>`).show();
+        return;
+    }
+    // 유튜브 창으로 넘긴 상태
+    $o.html(`<div class="sbgm-ext-text"><i class="fa-brands fa-youtube"></i> 유튜브 창에서 재생 중${ext.count > 1 ? ` · ${ext.count}곡 재생목록` : ''}</div>
+${ready ? `<div class="sbgm-ext-ready">새 장면 곡이 준비됐어요 · ${esc(ready.label || '')}</div>
+<div class="sbgm-ext-btns"><button class="sbgm-ext-btn" data-ext="ready-yt"><i class="fa-brands fa-youtube"></i> 유튜브 창에서 듣기</button><button class="sbgm-ext-btn ghost" data-ext="ready-here">여기서 듣기</button></div>
+<div class="sbgm-ext-note">새 유튜브 창이 열려요. 이전 창은 닫아 주세요.</div>`
+        : `<div class="sbgm-ext-btns"><button class="sbgm-ext-btn ghost" data-ext="back">실리태번에서 다시 듣기</button></div>
+<div class="sbgm-ext-note">분위기가 바뀌면 여기에 새 곡을 띄워 드릴게요</div>`}`).show();
 }
 
 // AI 음악 표시: 유튜브의 '콘텐츠 생성 방식(변경되었거나 합성된 콘텐츠)' 라벨, 또는 설명란의 AI 제작 문구
@@ -782,6 +874,11 @@ async function playFromQueue(index) {
         const t = state.queue[i];
         const { ok, why } = await inspectVideo(t.id, t.channel);
         if (seq !== playSeq) return true; // 그사이 다른 곡을 눌렀음
+        if (!ok && why === 'embed' && popupMode()) {
+            state.queueIndex = i;
+            playExternal(t);
+            return true;
+        }
         if (!ok) {
             // 외부 재생이 막혔거나 AI 생성 곡이면 대기열에서 빼고 같은 자리의 다음 곡으로
             state.queue.splice(i, 1);
@@ -803,6 +900,11 @@ async function playFromQueue(index) {
 }
 
 function setQueue(items, index, label) {
+    if (state.external) {
+        state.extReady = { items: items.map(trackLite).slice(index), label: label || '' };
+        renderAll();
+        return;
+    }
     state.queue = items.map(trackLite);
     state.queueIndex = index;
     state.queueLabel = label || '';
@@ -811,6 +913,8 @@ function setQueue(items, index, label) {
 }
 
 async function next(auto = false) {
+    if (state.external && auto) return;
+    if (state.external) stopExternal();
     if (state.queueIndex + 1 < state.queue.length) {
         const from = state.queueIndex + 1;
         state.queueIndex = from;
@@ -845,7 +949,7 @@ async function next(auto = false) {
 }
 
 function prev() {
-    if (state.player && state.playerReady && state.player.getCurrentTime?.() > 5) {
+    if (!state.external && state.player && state.playerReady && state.player.getCurrentTime?.() > 5) {
         state.player.seekTo(0, true);
         return;
     }
@@ -862,12 +966,15 @@ function togglePlay() {
         if (last) { state.queue = [last]; state.queueIndex = 0; return playTrack(last, { pushBack: false }); }
         return runDirector({ force: true, source: 'force-play' });
     }
+    if (state.extPending && !state.extPending.mobile) { $('#sbgm_ext [data-ext="open"]').trigger('click'); return; }
+    if (state.external) { stopExternal(); renderAll(); }
     if (!state.player) return playTrack(state.current, { pushBack: false });
     if (!state.playerReady) return;
     if (state.isPlaying) state.player.pauseVideo(); else state.player.playVideo();
 }
 
 function pause() {
+    stopExternal();
     try { if (state.playerReady && state.isPlaying) state.player.pauseVideo(); } catch { /* */ }
 }
 
@@ -1027,6 +1134,7 @@ function buildWindow() {
     </div>
   </div>
 
+  <div class="sbgm-ext" id="sbgm_ext"></div>
   <div class="sbgm-why" id="sbgm_why"></div>
   <div class="sbgm-suggest" id="sbgm_suggest"></div>
 
@@ -1245,6 +1353,7 @@ function bindWindow() {
 
     $('#sbgm_list').on('click', '.sbgm-row', function (e) {
         if (e.target.closest('a, .sbgm-row-act')) return;
+        if (state.external) stopExternal();
         const tab = S().window.tab;
         const i = Number(this.dataset.i);
         const list = listFor(tab);
@@ -1285,6 +1394,31 @@ function bindWindow() {
         if (!sg) return;
         setQueue(sg.items, Number(this.dataset.pick), sg.mood || sg.query);
         setStatus(sg.reason || sg.mood || sg.query);
+    });
+    $('#sbgm_ext').on('click', '[data-ext]', function () {
+        const act = this.dataset.ext;
+        if (act === 'open' && state.extPending) {
+            if (!openYoutubeWindow(remainingQueue().length ? remainingQueue() : [state.extPending], state.queueLabel)) {
+                notify('warning', '브라우저가 팝업을 막았어요. 주소창의 팝업 허용을 눌러주세요');
+            }
+        } else if (act === 'skip') {
+            state.extPending = null;
+            next();
+        } else if (act === 'dismiss') {
+            state.extPending = null;
+        } else if (act === 'back') {
+            stopExternal();
+            next();
+        } else if (act === 'ready-yt' && state.extReady) {
+            const r = state.extReady;
+            state.queue = r.items; state.queueIndex = 0; state.queueLabel = r.label;
+            if (!openYoutubeWindow(r.items, r.label)) notify('warning', '브라우저가 팝업을 막았어요');
+        } else if (act === 'ready-here' && state.extReady) {
+            const r = state.extReady;
+            stopExternal();
+            setQueue(r.items, 0, r.label);
+        }
+        renderAll();
     });
     $('#sbgm_status').on('click', () => {
         state.whyOpen = !state.whyOpen;
@@ -1415,6 +1549,7 @@ function renderAll() {
     renderHead();
     renderNow();
     renderWhy();
+    renderExternal();
     renderSuggest();
     renderControls();
     renderGenres();
@@ -1424,6 +1559,7 @@ function renderAll() {
 }
 
 function tick() {
+    if (state.external) return;
     if (!state.playerReady || !S().windowOpen) return;
     try {
         const cur = state.player.getCurrentTime() || 0;
@@ -1505,6 +1641,12 @@ function buildSettingsPanel() {
         <option value="mood">분위기 검색 — 분위기 검색어로 찾아요 (BGM 모음 위주)</option>
       </select>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_free"> '무료 BGM·저작권 없음' 영상은 뒤로</label>
+      <label for="sbgm_s_blocked">실리태번 안에서 재생이 막힌 곡</label>
+      <select id="sbgm_s_blocked" class="text_pole">
+        <option value="youtube">물어보고 유튜브 창으로 넘기기</option>
+        <option value="skip">건너뛰기</option>
+      </select>
+      <small class="sbgm-note">유명 가수 공식 영상은 권리자가 다른 사이트 재생을 막아 둔 경우가 많아요. 버튼을 누르면 대기열 전체가 유튜브 창에서 재생목록으로 이어서 재생돼요. 모바일은 '유튜브에서 듣기' 링크가 떠요.</small>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_ai"> AI 생성 음악 거르기 (유튜브 'AI·합성 콘텐츠' 표시, 설명란의 AI 제작 문구)</label>
       <div class="sbgm-s-row">
         <div class="menu_button" id="sbgm_s_clear_ai"><i class="fa-solid fa-robot"></i> AI 채널 기억 비우기 (<span id="sbgm_s_ai_n">0</span>)</div>
@@ -1575,6 +1717,7 @@ function buildSettingsPanel() {
     $('#sbgm_s_pick').on('change', function () { S().pickMode = this.value; save(); });
     $('#sbgm_s_free').on('change', function () { S().avoidFree = this.checked; save(); });
     $('#sbgm_s_ai').on('change', function () { S().avoidAi = this.checked; save(); });
+    $('#sbgm_s_blocked').on('change', function () { S().blockedPlay = this.value; save(); });
     $('#sbgm_s_clear_ai').on('click', () => { S().aiChannels = []; S().aiVideo = {}; save(); syncSettingsPanel(); });
     $('#sbgm_s_clear_ch').on('click', () => { S().blockedChannels = []; save(); syncSettingsPanel(); });
 
@@ -1631,6 +1774,7 @@ function syncSettingsPanel() {
     $('#sbgm_s_pick').val(s.pickMode);
     $('#sbgm_s_free').prop('checked', s.avoidFree);
     $('#sbgm_s_ai').prop('checked', s.avoidAi);
+    $('#sbgm_s_blocked').val(s.blockedPlay);
     $('#sbgm_s_ai_n').text(s.aiChannels.length);
     $('#sbgm_s_ch_n').text(s.blockedChannels.length);
     $('#sbgm_s_source').val(s.searchSource);
@@ -1728,6 +1872,7 @@ jQuery(async () => {
         c.eventSource.on(ev.CHAT_CHANGED, onChatChanged);
         if (ev.CONNECTION_PROFILE_LOADED) c.eventSource.on(ev.CONNECTION_PROFILE_LOADED, fillProfiles);
         setInterval(tick, 500);
+        globalThis.SceneBGM = { state, settings: S }; // 콘솔에서 상태 확인용
         renderAll();
         console.log(LOG, 'loaded');
     } catch (e) {
