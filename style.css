@@ -6,6 +6,8 @@
     --sbgm-accent: var(--SmartThemeQuoteColor, #e18a24);
     --sbgm-dim: color-mix(in srgb, var(--sbgm-fg) 58%, transparent);
     --sbgm-hover: color-mix(in srgb, var(--sbgm-fg) 9%, transparent);
+    /* 반투명 배경일 수 있어서, 반전 글자색은 불투명하게 */
+    --sbgm-solid-bg: var(--sbgm-bg);
     position: fixed;
     z-index: 2900;
     display: flex;
@@ -65,7 +67,11 @@
     font-size: 11.5px;
     color: var(--sbgm-dim);
 }
-.sbgm-mode button.active { background: var(--sbgm-accent); color: #111; font-weight: 700; }
+.sbgm-mode button.active {
+    background: var(--sbgm-fg) !important;
+    color: var(--sbgm-solid-bg) !important;
+    font-weight: 700;
+}
 .sbgm-icon {
     width: 28px;
     height: 28px;
@@ -122,17 +128,58 @@
 .sbgm-title[href]:hover { text-decoration: underline !important; }
 .sbgm-channel { color: var(--sbgm-dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sbgm-status {
+    display: block;
+    width: 100%;
     margin-top: 4px;
+    padding: 0 !important;
     font-size: 11.5px;
-    color: var(--sbgm-dim);
+    color: var(--sbgm-dim) !important;
+    text-align: left;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     min-height: 1.4em;
+    cursor: pointer;
+    background: none !important;
+    border: 0 !important;
 }
-.sbgm-status[data-kind="busy"] { color: var(--sbgm-accent); }
-.sbgm-status[data-kind="busy"]::before { content: "● "; animation: sbgm-pulse 1s infinite; }
-.sbgm-status[data-kind="error"] { color: #e5776b; }
+.sbgm-status:hover .sbgm-status-text { text-decoration: underline dotted; }
+.sbgm-status-text { display: inline-block; white-space: nowrap; }
+.sbgm-status.sbgm-marquee { text-overflow: clip; -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.sbgm-status.sbgm-marquee .sbgm-status-text { animation: sbgm-marquee var(--sbgm-mq-dur, 10s) linear infinite; }
+.sbgm-status.sbgm-marquee:hover .sbgm-status-text { animation-play-state: paused; }
+@keyframes sbgm-marquee {
+    0%, 18% { transform: translateX(0); }
+    82%, 100% { transform: translateX(var(--sbgm-mq-dist, 0)); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .sbgm-status.sbgm-marquee .sbgm-status-text { animation: none; }
+}
+.sbgm-status[data-kind="busy"] { color: var(--sbgm-accent) !important; }
+.sbgm-status[data-kind="busy"] .sbgm-status-text::before { content: "● "; animation: sbgm-pulse 1s infinite; }
+.sbgm-status[data-kind="error"] { color: #d9604f !important; }
+
+.sbgm-why {
+    display: none;
+    margin: 6px 10px 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--sbgm-border);
+    border-radius: 9px;
+    font-size: 12px;
+    flex: 0 0 auto;
+    max-height: 40%;
+    overflow-y: auto;
+}
+.sbgm-why-head { display: flex; gap: 6px; align-items: center; color: var(--sbgm-dim); font-size: 11px; }
+.sbgm-badge { padding: 0 6px; border: 1px solid var(--sbgm-border); border-radius: 999px; color: var(--sbgm-fg); }
+.sbgm-why-reason { margin: 5px 0; line-height: 1.55; }
+.sbgm-why dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 4px 0 0; }
+.sbgm-why dt { color: var(--sbgm-dim); }
+.sbgm-why dd { margin: 0; word-break: break-word; }
+.sbgm-why details { margin-top: 6px; }
+.sbgm-why summary { cursor: pointer; color: var(--sbgm-dim); }
+.sbgm-why pre { white-space: pre-wrap; font: inherit; font-size: 11.5px; color: var(--sbgm-dim); margin: 4px 0 0; max-height: 180px; overflow-y: auto; }
+.sbgm-why-empty { color: var(--sbgm-dim); }
 @keyframes sbgm-pulse { 50% { opacity: 0.2; } }
 
 /* 추천 */
@@ -189,17 +236,17 @@
     padding: 4px 8px 8px;
     flex: 0 0 auto;
 }
-.sbgm-controls .sbgm-icon { width: 32px; height: 32px; font-size: 14px; }
+.sbgm-controls .sbgm-icon { width: 30px; height: 32px; font-size: 14px; }
 .sbgm-controls .sbgm-play {
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background: var(--sbgm-fg);
-    color: var(--sbgm-bg);
+    background: var(--sbgm-fg) !important;
+    color: var(--sbgm-solid-bg) !important;
     font-size: 15px;
     margin: 0 2px;
 }
-.sbgm-controls .sbgm-play:hover { background: var(--sbgm-accent); color: #111; }
+.sbgm-controls .sbgm-play:hover { opacity: 0.85; }
 #sbgm_find { color: var(--sbgm-accent); }
 .sbgm-busy #sbgm_find i { animation: sbgm-pulse 0.9s infinite; }
 .sbgm-vol { display: flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--sbgm-dim); font-size: 11px; }
@@ -214,17 +261,36 @@
     border-top: 1px solid var(--sbgm-border);
 }
 .sbgm-genres { padding: 8px 10px 6px; flex: 0 0 auto; }
-.sbgm-genre-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; font-weight: 700; margin-bottom: 5px; }
+.sbgm-genre-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; }
+.sbgm-genre-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    flex: 1;
+    padding: 2px 0 !important;
+    text-align: left;
+    background: none !important;
+    border: 0 !important;
+}
+.sbgm-genre-toggle i { font-size: 9px; color: var(--sbgm-dim); transition: transform 0.15s; }
+.sbgm-genre-toggle.open i { transform: rotate(90deg); }
+.sbgm-genre-summary { margin-left: 4px; color: var(--sbgm-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sbgm-genre-toggle.open .sbgm-genre-summary { display: none; }
 .sbgm-genre-head small { font-weight: 400; color: var(--sbgm-dim); }
 .sbgm-inline { display: inline-flex; align-items: center; gap: 4px; font-weight: 400; cursor: pointer; }
 .sbgm-inline input { margin: 0; }
 .sbgm-chips {
     display: flex;
-    gap: 4px;
-    overflow-x: auto;
-    padding-bottom: 3px;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+    max-height: 210px;
+    overflow-y: auto;
     scrollbar-width: thin;
 }
+.sbgm-chip-group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.sbgm-chip-group > span:first-child { flex: 0 0 100%; font-size: 10.5px; color: var(--sbgm-dim); }
 .sbgm-chips button, .sbgm-chip-custom {
     flex: 0 0 auto;
     padding: 2px 9px;
@@ -254,6 +320,19 @@
 .sbgm-tabs button.active { color: var(--sbgm-fg); font-weight: 700; border-bottom-color: var(--sbgm-accent) !important; }
 
 .sbgm-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 8px; min-height: 60px; }
+.sbgm-scope { display: flex; gap: 4px; padding: 4px 6px 6px; }
+.sbgm-scope button {
+    padding: 2px 10px;
+    border: 1px solid var(--sbgm-border) !important;
+    border-radius: 999px;
+    font-size: 11.5px;
+    color: var(--sbgm-dim);
+    max-width: 70%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sbgm-scope button.on { background: var(--sbgm-fg) !important; color: var(--sbgm-solid-bg) !important; border-color: var(--sbgm-fg) !important; }
 .sbgm-list-label { font-size: 11px; color: var(--sbgm-dim); padding: 4px 6px 2px; }
 .sbgm-empty { padding: 20px 10px; text-align: center; color: var(--sbgm-dim); font-size: 12px; }
 .sbgm-row {
@@ -306,7 +385,10 @@
 .sbgm-window.sbgm-collapsed { min-height: 0; resize: none; height: auto !important; }
 .sbgm-collapsed .sbgm-body, .sbgm-collapsed .sbgm-seek { display: none; }
 .sbgm-collapsed .sbgm-now { grid-template-columns: 104px 1fr; padding: 8px 10px 2px; }
-.sbgm-collapsed .sbgm-status { display: none; }
+.sbgm-collapsed .sbgm-status, .sbgm-collapsed .sbgm-why { display: none !important; }
+@supports (color: rgb(from red r g b)) {
+    .sbgm-window { --sbgm-solid-bg: rgb(from var(--sbgm-bg) r g b); }
+}
 .sbgm-collapsed .sbgm-title { font-size: 12.5px; }
 .sbgm-collapsed .sbgm-suggest-items { grid-template-columns: repeat(3, 1fr); }
 .sbgm-collapsed .sbgm-controls { padding-top: 2px; }
@@ -338,4 +420,5 @@
 .sbgm-s-grid input { width: 90px !important; flex: 0 0 90px; margin: 0; }
 .sbgm-s-genres { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 8px; }
 .sbgm-s-row .menu_button { display: inline-flex; align-items: center; gap: 6px; }
+.sbgm-s-genre-group { grid-column: 1 / -1; margin-top: 6px; font-size: 0.85em; opacity: 0.7; }
 .sbgm-note { display: block; opacity: 0.7; margin-top: 3px; line-height: 1.4; }

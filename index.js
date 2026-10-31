@@ -5,26 +5,46 @@ const MODULE = 'sceneBgm';
 const LOG = '[Scene BGM]';
 const ctx = () => SillyTavern.getContext();
 
-const GENRES = [
-    ['lofi', '로파이', 'lofi'],
-    ['jazz', '재즈', 'jazz'],
-    ['piano', '피아노', 'piano'],
-    ['classical', '클래식', 'classical'],
-    ['orchestral', '오케스트라·OST', 'orchestral soundtrack'],
-    ['ambient', '앰비언트', 'ambient'],
-    ['acoustic', '어쿠스틱', 'acoustic'],
-    ['citypop', '시티팝', 'city pop'],
-    ['synthwave', '신스웨이브', 'synthwave'],
-    ['electronic', '일렉트로닉', 'electronic'],
-    ['rock', '록', 'rock'],
-    ['folk', '포크·켈틱', 'celtic folk'],
-    ['game', '게임 OST', 'video game soundtrack'],
-    ['jpop', 'J-pop', 'j-pop'],
-    ['kpop', 'K-pop', 'k-pop'],
-    ['kindie', 'K-인디', 'korean indie'],
-    ['rnb', 'R&B', 'r&b soul'],
-    ['hiphop', '힙합', 'hip hop'],
+const GENRE_GROUPS = [
+    ['잔잔·배경', [
+        ['lofi', '로파이', 'lofi'],
+        ['jazz', '재즈', 'jazz'],
+        ['piano', '피아노', 'piano'],
+        ['acoustic', '어쿠스틱', 'acoustic guitar'],
+        ['ambient', '앰비언트', 'ambient'],
+        ['newage', '뉴에이지', 'new age'],
+        ['bossa', '보사노바', 'bossa nova'],
+        ['classical', '클래식', 'classical'],
+    ]],
+    ['장면·세계관', [
+        ['orchestral', '오케스트라·OST', 'orchestral soundtrack'],
+        ['cinematic', '시네마틱', 'epic cinematic'],
+        ['game', '게임 OST', 'video game soundtrack'],
+        ['anime', '애니 OST', 'anime soundtrack'],
+        ['fantasy', '중세·판타지', 'medieval fantasy'],
+        ['folk', '포크·켈틱', 'celtic folk'],
+        ['eastern', '동양풍', 'traditional east asian'],
+        ['gugak', '국악', 'korean traditional gugak'],
+        ['dark', '다크·호러', 'dark ambient horror'],
+    ]],
+    ['대중음악', [
+        ['citypop', '시티팝', 'city pop'],
+        ['synthwave', '신스웨이브', 'synthwave'],
+        ['electronic', '일렉트로닉', 'electronic'],
+        ['chiptune', '칩튠', 'chiptune 8-bit'],
+        ['rock', '록', 'rock'],
+        ['postrock', '포스트록', 'post rock'],
+        ['metal', '메탈', 'metal'],
+        ['blues', '블루스', 'blues'],
+        ['rnb', 'R&B', 'r&b soul'],
+        ['hiphop', '힙합', 'hip hop'],
+        ['ballad', '발라드', 'ballad'],
+        ['jpop', 'J-pop', 'j-pop'],
+        ['kpop', 'K-pop', 'k-pop'],
+        ['kindie', 'K-인디', 'korean indie'],
+    ]],
 ];
+const GENRES = GENRE_GROUPS.flatMap(([, list]) => list);
 const GENRE_MAP = Object.fromEntries(GENRES.map(([k, ko, en]) => [k, { ko, en }]));
 
 const DEFAULT_GENRE_CONFIG = {
@@ -49,7 +69,7 @@ const DEFAULTS = {
     volume: 60,
     genre: { ...DEFAULT_GENRE_CONFIG },
     perChar: {},
-    window: { x: null, y: null, w: 340, h: 560, collapsed: false, tab: 'queue' },
+    window: { x: null, y: null, w: 340, h: 560, collapsed: false, tab: 'queue', genresOpen: false, likeScope: 'chat' },
     history: [],
     saved: [],
     blocked: [],
@@ -68,6 +88,8 @@ const state = {
     relatedFor: null,
     backStack: [],
     suggestion: null, // {mood, reason, query, items}
+    lastDecision: null, // {result, mood, query, reason, thinking, at, source}
+    whyOpen: false,
     aiSinceChange: 0,
     chatSwitched: false,
     busy: false,
@@ -277,7 +299,7 @@ function genreRules() {
     return lines.join('\n');
 }
 
-function buildPrompt(force) {
+function buildPrompt(force, reject = null) {
     const s = S();
     const c = ctx();
     const recent = (c.chat || [])
@@ -300,10 +322,16 @@ function buildPrompt(force) {
         ? `Currently playing: "${state.current.title}" (chosen for mood: ${state.current.mood || 'unknown'}).`
         : 'Nothing is playing yet.';
     const switched = state.chatSwitched ? '\nNote: the user just switched to a different chat/story; the current track was chosen for another story.' : '';
+    const rejectNote = reject
+        ? `\nThe user did NOT like "${reject.title}" (search: "${reject.query || '?'}"). Keep fitting the scene, but pick a clearly different sound: change the genre, instrument or tempo, and write a different query.`
+        : '';
+    const liked = chatLikes().slice(0, 6).map((t) => `"${t.title}"`);
+    const likedNote = liked.length ? `Tracks the user liked in this story (taste hint, don't repeat them): ${liked.join(', ')}` : '';
     const user = [
         `Story: ${charDisplayName() || 'unknown'}`,
         genreRules(),
-        cur + switched,
+        likedNote,
+        cur + switched + rejectNote,
         '',
         '### Latest scene',
         recent || '(empty)',
@@ -329,11 +357,12 @@ function parseDecision(text) {
     throw new Error('판단 모델의 답을 읽지 못했어요 (JSON 형식이 아님)');
 }
 
-async function askDirector(force) {
+async function askDirector(force, reject = null) {
     const s = S();
     const c = ctx();
-    const { system, user } = buildPrompt(force);
+    const { system, user } = buildPrompt(force || !!reject, reject);
     let text = '';
+    let thinking = '';
     if (s.profileId) {
         const CM = c.ConnectionManagerRequestService;
         if (!CM) throw new Error('연결 프로필 기능을 쓸 수 없어요 (Connection Manager 꺼짐?)');
@@ -343,10 +372,15 @@ async function askDirector(force) {
             stream: false, extractData: true, includePreset: true, includeInstruct: true,
         });
         text = typeof res === 'string' ? res : res?.content;
+        thinking = typeof res === 'object' ? (res?.reasoning || '') : '';
     } else {
         text = await c.generateRaw({ systemPrompt: system, prompt: user, responseLength: Number(s.maxTokens) || 500 });
     }
-    return parseDecision(text);
+    const d = parseDecision(text);
+    // 추론 블록이 본문에 섞여 온 경우 분리
+    const inline = String(text || '').match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/i);
+    d.thinking = (thinking || inline?.[1] || '').trim();
+    return d;
 }
 
 function finalizeQuery(q) {
@@ -358,15 +392,19 @@ function finalizeQuery(q) {
     return query;
 }
 
-async function runDirector({ force = false, source = 'auto' } = {}) {
+async function runDirector({ force = false, source = 'auto', reject = null } = {}) {
     const s = S();
     if (state.busy) return;
     state.busy = true;
-    setStatus('장면 분석 중…', 'busy');
+    setStatus(reject ? '다른 곡으로 다시 고르는 중…' : '장면 분석 중…', 'busy');
     renderNow();
     try {
-        const d = await askDirector(force);
-        if (!d.change && !force) {
+        const d = await askDirector(force, reject);
+        const record = (result) => {
+            state.lastDecision = { result, mood: d.mood, query: d.query, reason: d.reason, thinking: d.thinking, at: Date.now(), source };
+        };
+        if (!d.change && !force && !reject) {
+            record('keep');
             setStatus(`유지 · ${d.reason || '지금 곡이 장면에 맞아요'}`);
             state.aiSinceChange = 0;
             return;
@@ -381,12 +419,16 @@ async function runDirector({ force = false, source = 'auto' } = {}) {
         const tagged = items.map((v) => ({ ...v, query, mood: d.mood, reason: d.reason }));
         state.aiSinceChange = 0;
         state.chatSwitched = false;
-        if (s.mode === 'suggest' && source !== 'force-play') {
+        if (reject) items.splice(0, items.length, ...items.filter((v) => v.id !== reject.id));
+        d.query = query;
+        if (s.mode === 'suggest' && source !== 'force-play' && !reject) {
+            record('suggest');
             state.suggestion = { mood: d.mood, reason: d.reason, query, items: tagged };
             setStatus(`추천 도착 · ${d.mood || query}`);
             notify('info', `새 분위기: ${d.mood || query}`);
         } else {
-            setQueue(tagged, 0, d.mood || query);
+            record(reject ? 'reroll' : 'change');
+            setQueue(tagged.filter((v) => !reject || v.id !== reject.id), 0, d.mood || query);
             setStatus(d.reason || d.mood || query);
         }
     } catch (e) {
@@ -549,12 +591,45 @@ function pause() {
     try { if (state.playerReady && state.isPlaying) state.player.pauseVideo(); } catch { /* */ }
 }
 
-function toggleSave(track) {
+// 좋아요: 지금 채팅의 메타데이터(채팅 파일)에 기록 + 전체 목록에도 채팅 이름과 함께 남김
+function chatId() {
+    try { return ctx().getCurrentChatId?.() || null; } catch { return null; }
+}
+function chatLikes() {
+    const meta = ctx().chatMetadata;
+    return Array.isArray(meta?.sceneBgm?.liked) ? meta.sceneBgm.liked : [];
+}
+function isLikedHere(id) {
+    return chatLikes().some((x) => x.id === id);
+}
+function toggleLike(track) {
     const s = S();
-    const i = s.saved.findIndex((x) => x.id === track.id);
-    if (i === -1) { s.saved.unshift(trackLite(track)); notify('success', '보관함에 담았어요'); } else s.saved.splice(i, 1);
+    const c = ctx();
+    const cid = chatId();
+    if (!cid || !c.chatMetadata) { notify('warning', '채팅을 연 상태에서 눌러주세요'); return; }
+    const meta = c.chatMetadata;
+    meta.sceneBgm = meta.sceneBgm || {};
+    meta.sceneBgm.liked = Array.isArray(meta.sceneBgm.liked) ? meta.sceneBgm.liked : [];
+    const list = meta.sceneBgm.liked;
+    const i = list.findIndex((x) => x.id === track.id);
+    if (i === -1) {
+        const entry = { ...trackLite(track), likedAt: Date.now() };
+        list.unshift(entry);
+        s.saved = [{ ...entry, chatId: cid, chatName: charDisplayName() }, ...s.saved.filter((x) => !(x.id === track.id && x.chatId === cid))].slice(0, 500);
+        notify('success', `좋아요 — "${charDisplayName() || '이 채팅'}"에 기록했어요`);
+    } else {
+        list.splice(i, 1);
+        s.saved = s.saved.filter((x) => !(x.id === track.id && x.chatId === cid));
+    }
+    c.saveMetadata?.();
     save();
     renderAll();
+}
+
+function reroll() {
+    if (!S().enabled) setEnabled(true);
+    if (!state.current) return runDirector({ force: true, source: 'force-play' });
+    runDirector({ force: true, source: 'reroll', reject: state.current });
 }
 
 function blockCurrent() {
@@ -594,7 +669,40 @@ function setStatus(text, kind = '') {
     statusText = text;
     statusKind = kind;
     const el = document.getElementById('sbgm_status');
-    if (el) { el.textContent = text; el.dataset.kind = kind; el.title = text; }
+    if (!el) return;
+    el.querySelector('.sbgm-status-text').textContent = text;
+    el.dataset.kind = kind;
+    el.classList.toggle('open', state.whyOpen);
+    requestAnimationFrame(() => updateMarquee(el));
+}
+
+// 긴 문장은 흘러가게
+function updateMarquee(el) {
+    const span = el.querySelector('.sbgm-status-text');
+    el.classList.remove('sbgm-marquee');
+    const over = span.scrollWidth - el.clientWidth;
+    if (over > 4 && !state.whyOpen) {
+        el.style.setProperty('--sbgm-mq-dist', `-${over + 8}px`);
+        el.style.setProperty('--sbgm-mq-dur', `${Math.max(7, (over + 8) / 22 + 4)}s`);
+        el.classList.add('sbgm-marquee');
+    }
+}
+
+const RESULT_LABEL = { change: '교체', keep: '유지', suggest: '추천', reroll: '새로 고르기' };
+function renderWhy() {
+    const $w = $('#sbgm_why');
+    if (!state.whyOpen) { $w.hide().empty(); return; }
+    const d = state.lastDecision || (state.current ? { result: null, mood: state.current.mood, query: state.current.query, reason: state.current.reason } : null);
+    if (!d) { $w.html('<div class="sbgm-why-empty">아직 판단한 내용이 없어요</div>').show(); return; }
+    const time = d.at ? new Date(d.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    $w.html(`
+<div class="sbgm-why-head">${d.result ? `<span class="sbgm-badge">${RESULT_LABEL[d.result] || d.result}</span>` : ''}${time ? `<span>${time}</span>` : ''}</div>
+${d.reason ? `<p class="sbgm-why-reason">${esc(d.reason)}</p>` : ''}
+<dl>
+  ${d.mood ? `<dt>분위기</dt><dd>${esc(d.mood)}</dd>` : ''}
+  ${d.query ? `<dt>검색어</dt><dd>${esc(d.query)}</dd>` : ''}
+</dl>
+${d.thinking ? `<details><summary>모델의 생각 보기</summary><pre>${esc(d.thinking)}</pre></details>` : ''}`).show();
 }
 
 function buildWindow() {
@@ -618,10 +726,11 @@ function buildWindow() {
     <div class="sbgm-meta">
       <a class="sbgm-title" id="sbgm_title" target="_blank" rel="noopener">아직 재생 중인 곡이 없어요</a>
       <div class="sbgm-channel" id="sbgm_channel"></div>
-      <div class="sbgm-status" id="sbgm_status"></div>
+      <button class="sbgm-status" id="sbgm_status" title="눌러서 판단 내용 보기"><span class="sbgm-status-text"></span></button>
     </div>
   </div>
 
+  <div class="sbgm-why" id="sbgm_why"></div>
   <div class="sbgm-suggest" id="sbgm_suggest"></div>
 
   <div class="sbgm-seek">
@@ -635,7 +744,8 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_prev" title="이전 곡"><i class="fa-solid fa-backward-step"></i></button>
     <button class="sbgm-icon sbgm-play" id="sbgm_play" title="재생/일시정지"><i class="fa-solid fa-play"></i></button>
     <button class="sbgm-icon" id="sbgm_next" title="다음 곡"><i class="fa-solid fa-forward-step"></i></button>
-    <button class="sbgm-icon" id="sbgm_save" title="보관함에 담기"><i class="fa-regular fa-heart"></i></button>
+    <button class="sbgm-icon" id="sbgm_reroll" title="이 곡 말고 새로 고르기"><i class="fa-solid fa-arrows-rotate"></i></button>
+    <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)"><i class="fa-regular fa-heart"></i></button>
     <button class="sbgm-icon" id="sbgm_block" title="이 곡 다시 안 듣기"><i class="fa-solid fa-ban"></i></button>
     <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
   </div>
@@ -643,7 +753,10 @@ function buildWindow() {
   <div class="sbgm-body">
     <div class="sbgm-genres">
       <div class="sbgm-genre-head">
-        <span>장르 <small id="sbgm_genre_scope"></small></span>
+        <button class="sbgm-genre-toggle" id="sbgm_genre_toggle" title="장르 펼치기/접기">
+          <i class="fa-solid fa-chevron-right"></i><b>장르</b> <small id="sbgm_genre_scope"></small>
+          <span class="sbgm-genre-summary" id="sbgm_genre_summary"></span>
+        </button>
         <label class="sbgm-inline"><input type="checkbox" id="sbgm_inst"> 연주곡만</label>
       </div>
       <div class="sbgm-chips" id="sbgm_chips"></div>
@@ -653,7 +766,7 @@ function buildWindow() {
       <button data-tab="queue">대기열</button>
       <button data-tab="related">비슷한 곡</button>
       <button data-tab="history">기록</button>
-      <button data-tab="saved">보관함</button>
+      <button data-tab="saved">좋아요</button>
     </div>
     <div class="sbgm-list" id="sbgm_list"></div>
   </div>
@@ -768,7 +881,8 @@ function bindWindow() {
         if (!S().enabled) setEnabled(true);
         runDirector({ force: true, source: 'manual' });
     });
-    $('#sbgm_save').on('click', () => state.current && toggleSave(state.current));
+    $('#sbgm_save').on('click', () => state.current && toggleLike(state.current));
+    $('#sbgm_reroll').on('click', reroll);
     $('#sbgm_block').on('click', blockCurrent);
 
     $('#sbgm_vol').on('input', function () {
@@ -793,6 +907,11 @@ function bindWindow() {
         renderGenres();
         syncSettingsPanel();
     });
+    $('#sbgm_genre_toggle').on('click', () => {
+        S().window.genresOpen = !S().window.genresOpen;
+        save();
+        renderGenres();
+    });
     $('#sbgm_inst').on('change', function () {
         genreCfg().cfg.instrumentalOnly = this.checked;
         save();
@@ -816,20 +935,30 @@ function bindWindow() {
         if (tab === 'queue') { state.queueIndex = i; playTrack(state.queue[i]); return; }
         state.queue = list.map(trackLite);
         state.queueIndex = i;
-        state.queueLabel = { related: '비슷한 곡', history: '기록', saved: '보관함' }[tab];
+        state.queueLabel = { related: '비슷한 곡', history: '기록', saved: '좋아요' }[tab];
         playTrack(state.queue[i]);
     });
     $('#sbgm_list').on('click', '.sbgm-row-act[data-act="save"]', function () {
         const list = listFor(S().window.tab);
         const t = list?.[Number($(this).closest('.sbgm-row').data('i'))];
-        if (t) toggleSave(t);
+        if (t) toggleLike(t);
+    });
+    $('#sbgm_list').on('click', '[data-scope]', function () {
+        S().window.likeScope = this.dataset.scope;
+        save();
+        renderList();
     });
     $('#sbgm_list').on('click', '.sbgm-row-act[data-act="remove"]', function () {
         const s = S();
         const tab = s.window.tab;
         const i = Number($(this).closest('.sbgm-row').data('i'));
         if (tab === 'history') s.history.splice(i, 1);
-        if (tab === 'saved') s.saved.splice(i, 1);
+        if (tab === 'saved') {
+            const t = listFor('saved')[i];
+            if (t && (s.window.likeScope === 'chat' || t.chatId === chatId())) { toggleLike(t); return; }
+            const gi = s.saved.indexOf(t);
+            if (gi !== -1) s.saved.splice(gi, 1);
+        }
         save();
         renderList();
     });
@@ -840,6 +969,12 @@ function bindWindow() {
         setQueue(sg.items, Number(this.dataset.pick), sg.mood || sg.query);
         setStatus(sg.reason || sg.mood || sg.query);
     });
+    $('#sbgm_status').on('click', () => {
+        state.whyOpen = !state.whyOpen;
+        renderWhy();
+        setStatus(statusText, statusKind);
+        positionMobile();
+    });
     $('#sbgm_suggest').on('click', '[data-dismiss]', () => { state.suggestion = null; renderSuggest(); });
 }
 
@@ -848,22 +983,21 @@ function listFor(tab) {
     if (tab === 'queue') return state.queue;
     if (tab === 'related') return state.related;
     if (tab === 'history') return s.history;
-    if (tab === 'saved') return s.saved;
+    if (tab === 'saved') return s.window.likeScope === 'all' ? s.saved : chatLikes();
     return [];
 }
 
 function rowHtml(t, i, tab) {
     const s = S();
-    const savedSet = new Set(s.saved.map((x) => x.id));
     const isCur = state.current?.id === t.id && (tab !== 'queue' || i === state.queueIndex);
-    const heart = savedSet.has(t.id) ? 'fa-solid' : 'fa-regular';
+    const heart = isLikedHere(t.id) ? 'fa-solid' : 'fa-regular';
     const removable = tab === 'history' || tab === 'saved';
     return `
 <div class="sbgm-row${isCur ? ' sbgm-cur' : ''}" data-i="${i}" title="${esc(t.title)}">
   <div class="sbgm-thumb"><img loading="lazy" src="${esc(t.thumb || thumbOf(t.id))}" alt="">${t.duration ? `<span>${esc(t.duration)}</span>` : ''}${isCur ? '<i class="fa-solid fa-volume-high"></i>' : ''}</div>
-  <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc(t.channel || '')}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}</div></div>
+  <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc(t.channel || '')}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}${tab === 'saved' && s.window.likeScope === 'all' && t.chatName ? ` · ${esc(t.chatName)}` : ''}</div></div>
   <div class="sbgm-row-acts">
-    <button class="sbgm-row-act" data-act="save" title="보관함"><i class="${heart} fa-heart"></i></button>
+    <button class="sbgm-row-act" data-act="save" title="좋아요 (이 채팅에 기록)"><i class="${heart} fa-heart"></i></button>
     <a class="sbgm-row-act" href="${ytUrl(t.id)}" target="_blank" rel="noopener" title="유튜브에서 열기"><i class="fa-brands fa-youtube"></i></a>
     ${removable ? '<button class="sbgm-row-act" data-act="remove" title="목록에서 지우기"><i class="fa-solid fa-xmark"></i></button>' : ''}
   </div>
@@ -880,10 +1014,14 @@ function renderList() {
         queue: '분위기가 정해지면 여기에 곡이 쌓여요',
         related: state.current ? '비슷한 곡이 없어요' : '곡을 재생하면 비슷한 곡이 보여요',
         history: '들은 곡이 여기에 남아요',
-        saved: '♡를 눌러 담은 곡이 여기에 모여요',
+        saved: S().window.likeScope === 'all' ? '아직 좋아요한 곡이 없어요' : '♡를 누르면 이 채팅에 기록돼요',
     }[tab];
-    const label = tab === 'queue' && state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : '';
-    $l.html(list?.length ? label + list.map((t, i) => rowHtml(t, i, tab)).join('') : `<div class="sbgm-empty">${empty}</div>`);
+    let label = tab === 'queue' && state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : '';
+    if (tab === 'saved') {
+        const sc = S().window.likeScope;
+        label = `<div class="sbgm-scope"><button data-scope="chat" class="${sc !== 'all' ? 'on' : ''}">이 채팅${charDisplayName() ? ` · ${esc(charDisplayName())}` : ''}</button><button data-scope="all" class="${sc === 'all' ? 'on' : ''}">전체</button></div>`;
+    }
+    $l.html(label + (list?.length ? list.map((t, i) => rowHtml(t, i, tab)).join('') : `<div class="sbgm-empty">${empty}</div>`));
 }
 
 function renderTabs() {
@@ -894,8 +1032,14 @@ function renderTabs() {
 
 function renderGenres() {
     const { cfg, perChar } = genreCfg();
-    $('#sbgm_chips').html(GENRES.map(([k, ko]) => `<button data-genre="${k}" class="${cfg.genres.includes(k) ? 'on' : ''}">${esc(ko)}</button>`).join('')
-        + (cfg.customGenres.trim() ? cfg.customGenres.split(',').map((x) => x.trim()).filter(Boolean).map((x) => `<span class="sbgm-chip-custom">${esc(x)}</span>`).join('') : ''));
+    const open = !!S().window.genresOpen;
+    const custom = cfg.customGenres.split(',').map((x) => x.trim()).filter(Boolean);
+    $('#sbgm_chips').toggle(open).html(GENRE_GROUPS.map(([group, list]) => `
+<div class="sbgm-chip-group"><span>${esc(group)}</span>${list.map(([k, ko]) => `<button data-genre="${k}" class="${cfg.genres.includes(k) ? 'on' : ''}">${esc(ko)}</button>`).join('')}</div>`).join('')
+        + (custom.length ? `<div class="sbgm-chip-group"><span>직접 추가</span>${custom.map((x) => `<span class="sbgm-chip-custom">${esc(x)}</span>`).join('')}</div>` : ''));
+    const names = [...cfg.genres.map((g) => GENRE_MAP[g]?.ko).filter(Boolean), ...custom];
+    $('#sbgm_genre_summary').text(names.length ? (names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ')) : '선택 안 함');
+    $('#sbgm_genre_toggle').toggleClass('open', open);
     $('#sbgm_inst').prop('checked', !!cfg.instrumentalOnly);
     $('#sbgm_genre_scope').text(perChar ? `· ${charDisplayName()} 전용` : '· 전체 공통');
 }
@@ -939,7 +1083,7 @@ ${sg.reason ? `<div class="sbgm-suggest-reason">${esc(sg.reason)}</div>` : ''}
 
 function renderControls() {
     $('#sbgm_play i').attr('class', `fa-solid ${state.isPlaying ? 'fa-pause' : 'fa-play'}`);
-    const saved = state.current && S().saved.some((x) => x.id === state.current.id);
+    const saved = state.current && isLikedHere(state.current.id);
     $('#sbgm_save i').attr('class', `${saved ? 'fa-solid' : 'fa-regular'} fa-heart`);
     $('#sbgm_vol').val(S().volume);
 }
@@ -948,6 +1092,7 @@ function renderAll() {
     if (!$win) return;
     renderHead();
     renderNow();
+    renderWhy();
     renderSuggest();
     renderControls();
     renderGenres();
@@ -1124,7 +1269,7 @@ function syncSettingsPanel() {
     $('#sbgm_s_perchar').prop('checked', perChar);
     const name = charDisplayName();
     $('#sbgm_s_perchar_label').text(name ? `"${name}"만 장르 따로 저장` : '이 캐릭터만 장르 따로 저장');
-    $('#sbgm_s_genres').html(GENRES.map(([k, ko]) => `<label class="checkbox_label"><input type="checkbox" data-genre="${k}" ${cfg.genres.includes(k) ? 'checked' : ''}> ${esc(ko)}</label>`).join(''));
+    $('#sbgm_s_genres').html(GENRE_GROUPS.map(([group, list]) => `<div class="sbgm-s-genre-group">${esc(group)}</div>` + list.map(([k, ko]) => `<label class="checkbox_label"><input type="checkbox" data-genre="${k}" ${cfg.genres.includes(k) ? 'checked' : ''}> ${esc(ko)}</label>`).join('')).join(''));
     if (document.activeElement?.id !== 'sbgm_s_custom') $('#sbgm_s_custom').val(cfg.customGenres);
     if (document.activeElement?.id !== 'sbgm_s_excl') $('#sbgm_s_excl').val(cfg.excludes);
     $('#sbgm_s_inst').prop('checked', cfg.instrumentalOnly);
@@ -1154,6 +1299,7 @@ function onChatChanged() {
     state.chatSwitched = !!state.current;
     state.aiSinceChange = S().minGap;
     state.suggestion = null;
+    state.lastDecision = null;
     renderAll();
     syncSettingsPanel();
 }
@@ -1181,6 +1327,7 @@ function registerSlash() {
                 const v = String(value || '').trim();
                 if (!v || v === 'find') runDirector({ force: true, source: 'manual' });
                 else if (v === 'next') next();
+                else if (v === 'reroll' || v === 'new') reroll();
                 else if (v === 'prev') prev();
                 else if (v === 'toggle') togglePlay();
                 else if (v === 'on') setEnabled(true);
@@ -1192,7 +1339,7 @@ function registerSlash() {
                 }
                 return '';
             },
-            helpString: 'Scene BGM: /bgm (장면으로 찾기), /bgm next|prev|toggle|on|off|window, /bgm 검색어 (직접 검색해 재생)',
+            helpString: 'Scene BGM: /bgm (장면으로 찾기), /bgm next|prev|reroll|toggle|on|off|window, /bgm 검색어 (직접 검색해 재생)',
         }));
     } catch (e) {
         console.warn(LOG, 'slash command registration failed', e);
