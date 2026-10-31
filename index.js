@@ -1137,6 +1137,7 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_close" title="창 닫기 (음악은 계속)"><i class="fa-solid fa-xmark"></i></button>
   </div>
 
+  <div class="sbgm-scroll" id="sbgm_scroll">
   <div class="sbgm-now">
     <div class="sbgm-video" id="sbgm_video"><div class="sbgm-video-empty"><i class="fa-solid fa-music"></i></div></div>
     <div class="sbgm-meta">
@@ -1187,6 +1188,7 @@ function buildWindow() {
     </div>
     <div class="sbgm-list" id="sbgm_list"></div>
   </div>
+</div>
 </div>`;
     $('body').append(html);
     $win = $('#sbgm_window');
@@ -1371,10 +1373,27 @@ function bindWindow() {
         const list = listFor(tab);
         if (!list?.[i]) return;
         if (tab === 'queue') { state.queueIndex = i; playTrack(state.queue[i]); return; }
-        state.queue = list.map(trackLite);
-        state.queueIndex = i;
-        state.queueLabel = { related: '비슷한 곡', history: '기록', saved: '좋아요' }[tab];
-        playTrack(state.queue[i]);
+        // 다른 탭의 곡은 대기열을 갈아엎지 않고, 지금 곡 바로 다음에 끼워 넣어 재생
+        const t = trackLite(list[i]);
+        insertAfterCurrent(t);
+        state.queueIndex = Math.min(state.queueIndex + 1, state.queue.length - 1);
+        if (state.queueIndex < 0) state.queueIndex = 0;
+        playTrack(state.queue[state.queueIndex]);
+    });
+    $('#sbgm_list').on('click', '.sbgm-row-act[data-act="next"]', function () {
+        const list = listFor(S().window.tab);
+        const t = list?.[Number($(this).closest('.sbgm-row').data('i'))];
+        if (!t) return;
+        insertAfterCurrent(trackLite(t));
+        notify('success', '다음 곡으로 넣었어요');
+        renderList();
+    });
+    $('#sbgm_list').on('click', '.sbgm-row-act[data-act="dequeue"]', function () {
+        const i = Number($(this).closest('.sbgm-row').data('i'));
+        if (i === state.queueIndex) { next(); return; }
+        state.queue.splice(i, 1);
+        if (i < state.queueIndex) state.queueIndex--;
+        renderList();
     });
     $('#sbgm_list').on('click', '.sbgm-row-act[data-act="save"]', function () {
         const list = listFor(S().window.tab);
@@ -1441,6 +1460,17 @@ function bindWindow() {
     $('#sbgm_suggest').on('click', '[data-dismiss]', () => { state.suggestion = null; renderSuggest(); });
 }
 
+// 지금 곡 바로 다음 자리에 넣기 (대기열에 이미 있으면 그 자리로 옮김)
+function insertAfterCurrent(t) {
+    const cur = state.queueIndex;
+    const at = state.queue.findIndex((x, k) => x.id === t.id && k !== cur);
+    if (at !== -1) {
+        state.queue.splice(at, 1);
+        if (at < cur) state.queueIndex--;
+    }
+    state.queue.splice(Math.max(0, state.queueIndex + 1), 0, t);
+}
+
 function listFor(tab) {
     const s = S();
     if (tab === 'queue') return state.queue;
@@ -1455,11 +1485,15 @@ function rowHtml(t, i, tab) {
     const isCur = state.current?.id === t.id && (tab !== 'queue' || i === state.queueIndex);
     const liked = isLikedHere(t.id);
     const removable = tab === 'history' || tab === 'saved';
+    const queueBtn = tab === 'queue'
+        ? (isCur ? '' : '<button class="sbgm-row-act" data-act="dequeue" title="대기열에서 빼기"><i class="fa-solid fa-minus"></i></button>')
+        : '<button class="sbgm-row-act" data-act="next" title="다음 곡으로 넣기"><i class="fa-solid fa-list-ol"></i></button>';
     return `
 <div class="sbgm-row${isCur ? ' sbgm-cur' : ''}" data-i="${i}" title="${esc(t.title)}">
   <div class="sbgm-thumb"><img loading="lazy" src="${esc(t.thumb || thumbOf(t.id))}" alt="">${t.duration ? `<span>${esc(t.duration)}</span>` : ''}${isCur ? '<i class="fa-solid fa-volume-high"></i>' : ''}</div>
   <div class="sbgm-row-text"><div class="sbgm-row-title">${esc(t.title)}</div><div class="sbgm-row-sub">${esc([t.channel, fmtViews(t.views)].filter(Boolean).join(' · '))}${tab === 'history' && t.mood ? ` · ${esc(t.mood)}` : ''}${tab === 'saved' && s.window.likeScope === 'all' && t.chatName ? ` · ${esc(t.chatName)}` : ''}</div></div>
   <div class="sbgm-row-acts">
+    ${queueBtn}
     <button class="sbgm-row-act" data-act="save" title="${liked ? '좋아요 취소' : '좋아요 (이 채팅에 기록)'}" aria-pressed="${liked}">${heartSvg(liked)}</button>
     <a class="sbgm-row-act" href="${ytUrl(t.id)}" target="_blank" rel="noopener" title="유튜브에서 열기"><i class="fa-brands fa-youtube"></i></a>
     ${removable ? '<button class="sbgm-row-act" data-act="remove" title="목록에서 지우기"><i class="fa-solid fa-xmark"></i></button>' : ''}
@@ -1469,6 +1503,9 @@ function rowHtml(t, i, tab) {
 
 function renderList() {
     if (!$win) return;
+    keepScroll(renderListInner);
+}
+function renderListInner() {
     const tab = S().window.tab;
     const list = listFor(tab);
     const $l = $('#sbgm_list');
@@ -1556,8 +1593,20 @@ function renderControls() {
     $('#sbgm_vol').val(S().volume)[0]?.style.setProperty('--p', `${S().volume}%`);
 }
 
+// 다시 그릴 때 스크롤 위치가 튀지 않게
+function keepScroll(fn) {
+    const el = document.getElementById('sbgm_scroll');
+    const top = el ? el.scrollTop : 0;
+    fn();
+    if (el && el.scrollTop !== top) el.scrollTop = top;
+    if (el) requestAnimationFrame(() => { if (Math.abs(el.scrollTop - top) > 1 && top <= el.scrollHeight - el.clientHeight) el.scrollTop = top; });
+}
+
 function renderAll() {
     if (!$win) return;
+    keepScroll(renderAllInner);
+}
+function renderAllInner() {
     renderHead();
     renderNow();
     renderWhy();

@@ -183,8 +183,6 @@
     border-radius: 9px;
     font-size: 12px;
     flex: 0 0 auto;
-    max-height: 40%;
-    overflow-y: auto;
 }
 .sbgm-why-head { display: flex; gap: 6px; align-items: center; color: var(--sbgm-dim); font-size: 11px; }
 .sbgm-badge { padding: 0 6px; border: 1px solid var(--sbgm-border); border-radius: 999px; color: var(--sbgm-fg); }
@@ -370,11 +368,21 @@
 .sbgm-vol input[type="range"] { width: 58px; flex: 0 0 58px; }
 
 /* 본문 (장르 + 탭 + 목록) */
+/* 머리 아래 전체가 한 번에 스크롤 (판단·장르를 펼쳐도 아래 목록까지 내려갈 수 있게) */
+.sbgm-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    scrollbar-width: thin;
+}
+.sbgm-scroll > * { flex: 0 0 auto; }
+.sbgm-collapsed .sbgm-scroll { overflow: visible; }
 .sbgm-body {
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    flex: 1 1 auto;
     border-top: 1px solid var(--sbgm-border);
 }
 .sbgm-genres { padding: 8px 10px 6px; flex: 0 0 auto; }
@@ -402,9 +410,6 @@
     flex-direction: column;
     gap: 6px;
     margin-top: 6px;
-    max-height: 210px;
-    overflow-y: auto;
-    scrollbar-width: thin;
 }
 .sbgm-chip-group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .sbgm-chip-group > span:first-child { flex: 0 0 100%; font-size: 10.5px; color: var(--sbgm-dim); }
@@ -426,6 +431,10 @@
     padding: 0 8px;
     border-bottom: 1px solid var(--sbgm-border);
     flex: 0 0 auto;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--sbgm-solid-bg);
 }
 .sbgm-tabs button {
     flex: 1;
@@ -437,7 +446,7 @@
 #sbgm_window .sbgm-tabs button:focus, #sbgm_window .sbgm-tabs button:active { background: transparent !important; }
 #sbgm_window .sbgm-tabs button.sbgm-sel { color: var(--sbgm-fg) !important; font-weight: 700; border-bottom-color: var(--sbgm-accent) !important; background: transparent !important; }
 
-.sbgm-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 4px 8px; min-height: 60px; }
+.sbgm-list { padding: 4px 4px 8px; min-height: 60px; }
 .sbgm-scope { display: flex; gap: 4px; padding: 4px 6px 6px; }
 .sbgm-scope button {
     padding: 2px 10px;
