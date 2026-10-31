@@ -595,3 +595,141 @@
     .sbgm-row { padding: 6px; }
     .sbgm-thumb { flex-basis: 72px; width: 72px; height: 40px; }
 }
+
+/* 반복 버튼 */
+#sbgm_repeat { position: relative; }
+#sbgm_repeat.on { color: var(--sbgm-accent) !important; }
+#sbgm_repeat_badge { position: absolute; right: 3px; bottom: 3px; font-size: 9px; font-weight: 800; line-height: 1; }
+#sbgm_window .sbgm-controls .sbgm-play.sbgm-need-tap { animation: sbgm-pulse 1s infinite; outline: 2px solid var(--sbgm-accent); outline-offset: 2px; }
+.sbgm-tap {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    padding: 4px 8px;
+    font-size: 11.5px;
+    text-align: center;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+
+/* 직접 넣기 */
+.sbgm-direct { display: flex; gap: 4px; padding: 4px 6px 2px; }
+#sbgm_window .sbgm-direct input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px !important;
+    font: inherit;
+    font-size: 11.5px !important;
+    color: var(--sbgm-fg) !important;
+    background: var(--sbgm-hover) !important;
+    border: 1px solid var(--sbgm-border) !important;
+    border-radius: 999px !important;
+    margin: 0 !important;
+    height: auto !important;
+}
+#sbgm_window .sbgm-direct button { width: 26px; border-radius: 50%; color: var(--sbgm-dim) !important; }
+#sbgm_window .sbgm-direct button:hover { background: var(--sbgm-hover) !important; color: var(--sbgm-fg) !important; }
+
+/* 메시지 🎵 버튼 */
+.sbgm-mes-btn { cursor: pointer; }
+
+/* 곡 카드 */
+.sbgm-card {
+    --c-fg: var(--SmartThemeBodyColor, #dcdcd2);
+    --c-dim: color-mix(in srgb, var(--c-fg) 60%, transparent);
+    --c-border: var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    --c-bg: color-mix(in srgb, var(--c-fg) 7%, transparent);
+    --c-accent: var(--SmartThemeQuoteColor, #e18a24);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: min(100%, 360px);
+    margin: 0 auto 10px;
+    padding: 6px 12px 6px 6px;
+    border: 1px solid var(--c-border);
+    border-radius: 999px;
+    background: var(--c-bg);
+    color: var(--c-fg);
+    font-size: 13px;
+    line-height: 1.25;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    vertical-align: top;
+}
+.mes_text > .sbgm-card { display: flex; width: fit-content; }
+.sbgm-card:hover { background: color-mix(in srgb, var(--c-fg) 12%, transparent); }
+.sbgm-card.sbgm-card-cur { border-color: var(--c-fg); }
+.sbgm-card-text { display: flex; flex-direction: column; min-width: 0; }
+.sbgm-card-text b { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sbgm-card-text small { color: var(--c-dim); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sbgm-card-btn {
+    flex: 0 0 auto;
+    width: 30px; height: 30px;
+    display: inline-grid; place-items: center;
+    border-radius: 50%;
+    border: 1px solid var(--c-border);
+    font-size: 11px;
+}
+.sbgm-card-cur .sbgm-card-btn { background: var(--c-fg); color: var(--SmartThemeBlurTintColor, #222); border-color: var(--c-fg); }
+.sbgm-card-btn.plain { border: 0; }
+.sbgm-eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; margin-left: 2px; }
+.sbgm-eq i { width: 2.5px; background: var(--c-accent); animation: sbgm-eq 0.9s infinite ease-in-out; }
+.sbgm-eq i:nth-child(1) { height: 60%; animation-delay: 0s; }
+.sbgm-eq i:nth-child(2) { height: 100%; animation-delay: 0.3s; }
+.sbgm-eq i:nth-child(3) { height: 40%; animation-delay: 0.15s; }
+@keyframes sbgm-eq { 0%, 100% { transform: scaleY(0.4); } 50% { transform: scaleY(1); } }
+
+/* 미니 플레이어 */
+.sbgm-card-player { border-radius: 12px; padding: 6px 8px 6px 6px; min-width: 240px; }
+.sbgm-card-art { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 8px; overflow: hidden; display: grid; place-items: center; background: color-mix(in srgb, var(--c-fg) 12%, transparent); color: var(--c-dim); }
+.sbgm-card-art img { width: 100%; height: 100%; object-fit: cover; }
+.sbgm-card-player .sbgm-card-text { flex: 1; }
+/* 한 줄 */
+.sbgm-card-line { border: 0; border-bottom: 1px solid var(--c-border); border-radius: 0; background: none; padding: 2px 6px 4px; gap: 7px; }
+.sbgm-card-line.sbgm-card-cur { border-bottom-color: var(--c-fg); }
+.sbgm-card-inline { flex-direction: row; align-items: baseline; gap: 6px; }
+/* LP판 */
+.sbgm-card-disc {
+    flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; overflow: hidden; position: relative;
+    background: radial-gradient(circle, #8a8af0 0 14%, #111 15% 22%, #222 23% 30%, #111 31% 38%, #222 39% 46%, #111 47% 55%, #1a1a1a 56% 100%);
+}
+.sbgm-card-disc img { position: absolute; inset: 30%; width: 40%; height: 40%; border-radius: 50%; object-fit: cover; }
+.sbgm-card-disc.spin { animation: sbgm-spin 3s linear infinite; }
+@keyframes sbgm-spin { to { transform: rotate(360deg); } }
+/* 진행 막대 */
+.mes_text > .sbgm-card.sbgm-card-bar { display: grid; }
+.sbgm-card-bar { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "btn text eq" "bar bar bar"; gap: 6px 10px; border-radius: 12px; padding: 8px 12px 8px 8px; width: min(100%, 320px) !important; }
+.sbgm-card-bar .sbgm-card-btn { grid-area: btn; }
+.sbgm-card-bar .sbgm-card-text { grid-area: text; }
+.sbgm-card-bar .sbgm-eq { grid-area: eq; align-self: center; }
+.sbgm-card-prog { grid-area: bar; display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--c-dim); font-variant-numeric: tabular-nums; }
+.sbgm-card-track { flex: 1; height: 3px; border-radius: 2px; background: color-mix(in srgb, var(--c-fg) 20%, transparent); overflow: hidden; }
+.sbgm-card-fill { display: block; height: 100%; width: 0; background: var(--c-fg); }
+
+/* 카드 메뉴 */
+.sbgm-card-menu {
+    position: fixed;
+    z-index: 3100;
+    min-width: 180px;
+    padding: 4px;
+    background: var(--SmartThemeBlurTintColor, #1d1d1d);
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 13px;
+}
+.sbgm-card-menu a, .sbgm-card-menu button {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    border: 0; border-radius: 6px;
+    background: none;
+    color: var(--SmartThemeBodyColor, #ddd) !important;
+    text-decoration: none !important;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.sbgm-card-menu a:hover, .sbgm-card-menu button:hover { background: color-mix(in srgb, var(--SmartThemeBodyColor, #ddd) 10%, transparent); }

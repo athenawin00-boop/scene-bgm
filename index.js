@@ -72,6 +72,13 @@ const DEFAULTS = {
     blockedPlay: 'youtube', // 실리태번 안에서 막힌 곡: skip | youtube(유튜브 창으로 넘기기)
     tryAlternates: true, // 막히면 같은 곡의 다른 업로드(Topic 음원·공식 오디오·가사 영상) 먼저 시도
     allowFranchise: false, // 캐릭터 원작 테마곡·OST 허용
+    switchAtEnd: false, // 자동 판단으로 곡이 정해지면 듣던 곡이 끝난 뒤에 바꾸기
+    repeat: 'off', // off | one | liked
+    card: false, // AI 답장에 곡 카드 넣기 (메인 모델이 <bgm> 태그를 적음)
+    cardEvery: 6, // 답장 N개마다 카드
+    cardStyle: 'pill', // pill | player | line | vinyl | bar
+    cardAutoPlay: true, // 카드 붙은 답장이 오면 바로 틀기
+    cardOnPick: true, // 메시지 🎵로 고른 곡을 카드로 남기기
     avoidAi: true, // AI 생성 음악 거르기
     aiVideo: {}, // 영상 id → AI 표시 여부 캐시
     aiChannels: [], // AI 음악으로 확인된 채널 (자동 학습)
@@ -107,6 +114,11 @@ const state = {
     whyOpen: false,
     skipped: {}, // 이번 판단에서 건너뛴 수 { embed, ai }
     altTry: null, // { orig, list, i } 같은 곡 다른 영상 시도 중
+    pendingNew: null, // { items, label } 듣던 곡이 끝난 뒤 바꿀 새 곡들
+    needTap: false, // 브라우저가 자동 재생을 막음
+    hintTimer: 0,
+    rebuilt153: false, // 오류 153으로 플레이어를 다시 만든 적 있음
+    cardsTimer: 0,
     external: null, // { at, count } 유튜브 창으로 넘긴 상태 (창은 실리태번 보안 설정 때문에 조종 불가)
     extPending: null, // 막혀서 유튜브 창으로 넘길지 묻는 중인 곡 { ...track, mobile? }
     extReady: null, // 유튜브 창으로 듣는 중에 새로 고른 곡들 { items, label }
@@ -168,7 +180,7 @@ function fmtViews(n) {
 const decodeHtml = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
 const textOf = (t) => t?.simpleText ?? t?.content ?? (Array.isArray(t?.runs) ? t.runs.map((r) => r.text).join('') : '') ?? '';
 const notify = (type, msg) => { try { toastr[type](msg, 'Scene BGM', { timeOut: 3500 }); } catch { console.log(LOG, msg); } };
-const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', views: t.views ?? null, thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '', songArtist: t.songArtist || t.song?.artist || '', songTitle: t.songTitle || t.song?.title || '' });
+const trackLite = (t) => t && ({ id: t.id, title: t.title, channel: t.channel, duration: t.duration || '', views: t.views ?? null, thumb: t.thumb || thumbOf(t.id), query: t.query || '', mood: t.mood || '', reason: t.reason || '', songArtist: t.songArtist || t.song?.artist || '', songTitle: t.songTitle || t.song?.title || '', ...(t.direct ? { direct: true } : {}) });
 
 function currentCharKey() {
     const c = ctx();
@@ -351,9 +363,26 @@ function filterFresh(items) {
 const FREE_RE = /no\s*copyright|copyright[\s-]*free|royalty[\s-]*free|free\s*(bgm|music|download|to use)|non[\s-]*copyright|ncs\b|저작권\s*(없는|free|프리)|무료\s*(bgm|브금|음악)|무료브금|노카피|\bvlog\s*music/i;
 const isFree = (v) => FREE_RE.test(`${v.title} ${v.channel}`);
 const chKey = (c) => String(c || '').trim().toLowerCase();
+
+// 같은 영상도 기기·브라우저에 따라 막히기도 함 → 플레이어가 거부한 영상은 이 브라우저에만 기억
+const DEVICE_KEY = 'sceneBgm_device_v1';
+function deviceBlocked() {
+    try { const d = JSON.parse(localStorage.getItem(DEVICE_KEY) || '{}'); return Array.isArray(d.blocked) ? d.blocked : []; } catch { return []; }
+}
+function rememberDeviceBlocked(id) {
+    try {
+        const list = deviceBlocked();
+        if (!list.includes(id)) list.push(id);
+        localStorage.setItem(DEVICE_KEY, JSON.stringify({ blocked: list.slice(-400) }));
+    } catch { /* 저장소를 못 쓰는 브라우저 */ }
+}
+function clearDeviceBlocked() {
+    try { localStorage.removeItem(DEVICE_KEY); } catch { /* */ }
+}
+const isBlockedHere = (id) => S().embedOk[id] === false || deviceBlocked().includes(id);
 // 막힌 곡을 팝업 창으로 틀 수 있는지 (모바일은 팝업이 새 탭이라 제외)
 const popupMode = () => S().blockedPlay !== 'skip' && !isMobile();
-const embedUsable = (id) => popupMode() || S().embedOk[id] !== false;
+const embedUsable = (id) => popupMode() || !isBlockedHere(id);
 function channelBlocked(v) {
     const s = S();
     const k = chKey(v.channel);
@@ -373,13 +402,16 @@ function pickBestForSong(song, items) {
         const titleFull = t && vt.includes(t);
         const titlePart = t && t.split(' ').filter((w) => w.length > 1 && vt.includes(w)).length >= Math.ceil(t.split(' ').length / 2);
         const artistHit = a && (vt.includes(a) || vc.includes(a) || a.split(' ').filter((w) => w.length > 2).some((w) => vc.includes(w)));
-        const officialCh = / topic$/.test(vc) || /official|공식|vevo|records|music$/.test(vc);
+        const chanKey = vc.replace(/ topic$/, '').replace(/official|공식|vevo/g, '').trim();
+        const officialCh = / topic$/.test(vc) || /official|공식|vevo|records|music$/.test(vc) || (a.length > 1 && (chanKey === a || chanKey.includes(a)));
         // AI 채널이 같은 제목으로 올린 가짜 곡을 피하려고, 아티스트가 안 맞으면 공식 채널일 때만 인정
         if (!(titleFull || titlePart) || (a && !artistHit && !officialCh)) return;
         if (titleFull) sc += 6; else sc += 3;
         if (artistHit) sc += 4;
         if (officialCh) sc += 2;
-        if (/official (audio|music video|mv)|\[mv\]|\bmv\b|audio/.test(vt)) sc += 1;
+        if (/ topic$/.test(vc)) sc += 2; // Topic = 음원 그대로
+        if (/official (audio|music video|mv)|\[mv\]|\bmv\b|audio|공식 음원/.test(vt)) sc += 1;
+        if (/official lyric|lyric video/.test(vt)) sc += 0.5;
         if (/lyrics|가사|cover|커버|reaction|리액션|karaoke|노래방|tutorial|sheet|\bhour|시간|playlist|플레이리스트|mix\b|loop|1h/.test(vt)) sc -= 3;
         if (/live|라이브|concert|콘서트|fancam|직캠/.test(vt)) sc -= 1.5;
         if (isFree(v)) sc -= 6;
@@ -402,7 +434,7 @@ async function resolveSongs(songs) {
             if (v) return { ...v, song, songArtist: song.artist, songTitle: song.title };
             // 왜 못 썼는지 표시용
             const raw = pickBestForSong(song, all);
-            if (raw) song.skip = S().embedOk[raw.id] === false ? '외부 재생 막힘' : 'AI 생성 곡이라 건너뜀';
+            if (raw) song.skip = isBlockedHere(raw.id) ? '외부 재생 막힘' : 'AI 생성 곡이라 건너뜀';
             return null;
         } catch (e) {
             console.warn(LOG, 'song search failed', song, e);
@@ -446,9 +478,12 @@ function clip(text, max) {
 }
 
 // 최근 대화에서 내 메시지 N개 + AI 답변 M개를 시간순으로
-function collectScene() {
+function collectScene(upTo = null) {
     const s = S();
-    const chat = (ctx().chat || []).filter((m) => !m.is_system && m.mes);
+    let chat = (ctx().chat || []);
+    // 메시지 🎵로 고를 땐 그 메시지까지만 (숨긴 메시지도 읽음)
+    if (Number.isInteger(upTo)) chat = chat.slice(0, upTo + 1).filter((m) => m.mes);
+    else chat = chat.filter((m) => !m.is_system && m.mes);
     const wantUser = Number(s.userMsgs) || 0;
     const wantAi = Math.max(1, Number(s.aiMsgs) || 1);
     let u = 0, a = 0;
@@ -469,8 +504,8 @@ function collectScene() {
     }).join('\n\n');
 }
 
-function buildPrompt(force, reject = null, extra = '') {
-    const recent = collectScene();
+function buildPrompt(force, reject = null, extra = '', upTo = null) {
+    const recent = collectScene(upTo);
 
     const songsMode = S().pickMode === 'songs';
     const franchiseRule = S().allowFranchise
@@ -543,15 +578,22 @@ function parseDecision(text) {
             }
         } catch { /* fallthrough */ }
     }
-    const q = raw.match(/"?query"?\s*[:=]\s*"([^"]+)"/i);
-    if (q) return { change: true, mood: '', query: q[1], reason: '', songs: [] };
-    throw new Error('판단 모델의 답을 읽지 못했어요 (JSON 형식이 아님)');
+    // 답이 중간에 끊겼거나 앞뒤에 말이 붙은 경우: 곡 조각을 하나씩 건짐
+    const songs = [];
+    for (const piece of raw.match(/\{[^{}]*"title"[^{}]*\}/g) || []) {
+        try { const x = JSON.parse(piece); if (x?.title) songs.push({ artist: String(x.artist || ''), title: String(x.title) }); } catch { /* */ }
+    }
+    const grab = (k) => raw.match(new RegExp(`"${k}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`))?.[1] ?? '';
+    const q = grab('query');
+    if (songs.length || q) return { change: true, moment: grab('moment'), mood: grab('mood'), query: q, reason: grab('reason'), songs };
+    if (!raw.trim()) throw new Error('판단 모델이 빈 답을 보냈어요. 추론 모델이면 최대 토큰을 올리거나 다른 프로필로 바꿔 보세요');
+    throw new Error(`판단 모델이 다른 답을 보냈어요: "${raw.trim().slice(0, 60)}…"`);
 }
 
-async function askDirector(force, reject = null, extra = '') {
+async function askDirector(force, reject = null, extra = '', upTo = null) {
     const s = S();
     const c = ctx();
-    const { system, user } = buildPrompt(force || !!reject, reject, extra);
+    const { system, user } = buildPrompt(force || !!reject, reject, extra, upTo);
     let text = '';
     let thinking = '';
     if (s.profileId) {
@@ -583,18 +625,20 @@ function finalizeQuery(q) {
     return query;
 }
 
-async function runDirector({ force = false, source = 'auto', reject = null } = {}) {
+async function runDirector({ force = false, source = 'auto', reject = null, upTo = null } = {}) {
     const s = S();
     if (state.busy) return;
     state.busy = true;
     state.skipped = {};
+    const chatAtStart = chatId();
     setStatus(reject ? '다른 곡으로 다시 고르는 중…' : source === 'continue' ? '이어서 들을 곡 고르는 중…' : '장면 분석 중…', 'busy');
     renderNow();
     try {
         const extra = source === 'continue'
             ? 'The previous picks have finished playing and the scene has not changed much. Recommend 5 MORE songs in the same vein, all different from the recently played ones.'
             : '';
-        const d = await askDirector(force, reject, extra);
+        const d = await askDirector(force, reject, extra, upTo);
+        if (chatAtStart !== chatId()) return; // 그사이 다른 채팅으로 감
         const record = (result) => {
             state.lastDecision = { result, moment: d.moment, mood: d.mood, query: d.query, reason: d.reason, thinking: d.thinking, songs: d.songs || [], found: d.found || null, at: Date.now(), source };
         };
@@ -638,10 +682,17 @@ async function runDirector({ force = false, source = 'auto', reject = null } = {
             state.suggestion = { mood: d.mood, reason: d.reason, query, items: tagged };
             setStatus(`추천 도착 · ${d.mood || query}`);
             notify('info', `새 분위기: ${d.mood || query}`);
+        } else if (source === 'auto' && s.switchAtEnd && state.current && state.isPlaying && !state.external) {
+            // 듣던 곡이 끝난 뒤에 바꾸기
+            record('change');
+            state.pendingNew = { items: tagged.map(trackLite), label: d.mood || query };
+            setStatus(`다음 곡부터 바뀜 · ${d.reason || d.mood || query}`);
         } else {
             record(reject ? 'reroll' : source === 'continue' ? 'continue' : 'change');
-            setQueue(tagged.filter((v) => !reject || v.id !== reject.id), 0, d.mood || query);
+            const list = tagged.filter((v) => !reject || v.id !== reject.id);
+            setQueue(list, 0, d.mood || query);
             setStatus(d.reason || d.mood || query);
+            if (Number.isInteger(upTo) && s.cardOnPick && list[0]) attachCard(upTo, list[0]);
         }
     } catch (e) {
         console.error(LOG, e);
@@ -669,6 +720,33 @@ function loadYtApi() {
     return ytApiPromise;
 }
 
+function destroyPlayer() {
+    try { state.player?.destroy?.(); } catch { /* */ }
+    state.player = null;
+    state.playerReady = false;
+    state.isPlaying = false;
+    document.getElementById('sbgm_video')?.replaceChildren();
+}
+
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// 재생을 시켰는데 몇 초 뒤에도 안 나오면 브라우저가 소리 있는 자동 재생을 막은 것
+function armTapHint(id) {
+    clearTimeout(state.hintTimer);
+    state.needTap = false;
+    state.hintTimer = setTimeout(() => {
+        if (state.current?.id !== id || state.isPlaying || state.external) return;
+        state.needTap = true;
+        if (IS_IOS) {
+            if (!S().windowOpen) setWindowOpen(true);
+        } else if (!S().windowOpen) {
+            notify('info', '브라우저가 자동 재생을 막았어요. 입력창의 ♫를 눌러 창을 열고 ▶를 눌러 주세요');
+        }
+        renderNow();
+        renderControls();
+    }, IS_IOS ? 1500 : 4000);
+}
+
 async function ensurePlayer(firstId) {
     if (state.player) return;
     await loadYtApi();
@@ -682,7 +760,7 @@ async function ensurePlayer(firstId) {
     iframe.setAttribute('frameborder', '0');
     const params = new URLSearchParams({
         enablejsapi: '1', autoplay: '1', playsinline: '1', controls: '0', rel: '0', iv_load_policy: '3', disablekb: '1',
-        origin: location.origin,
+        origin: location.origin, widget_referrer: location.origin,
     });
     iframe.src = `https://www.youtube.com/embed/${firstId}?${params}`;
     holder.appendChild(iframe);
@@ -696,14 +774,32 @@ async function ensurePlayer(firstId) {
             },
             onStateChange: (e) => {
                 state.isPlaying = e.data === YT.PlayerState.PLAYING;
-                if (e.data === YT.PlayerState.PLAYING) { state.errorSkips = 0; if (state.altTry) confirmAlt(); }
-                if (e.data === YT.PlayerState.ENDED) next(true);
+                if (e.data === YT.PlayerState.PLAYING) {
+                    state.errorSkips = 0;
+                    state.rebuilt153 = false;
+                    clearTimeout(state.hintTimer);
+                    if (state.needTap) { state.needTap = false; renderNow(); }
+                    if (state.altTry) confirmAlt();
+                    nameDirectTrack();
+                    scheduleCards();
+                }
+                if (e.data === YT.PlayerState.ENDED) onEnded();
                 renderControls();
+                scheduleCards();
             },
             onError: (e) => {
                 console.warn(LOG, 'player error', e.data, state.current?.id);
-                const blockedErr = [101, 150, 153].includes(e.data);
-                if (state.current && blockedErr) rememberEmbed(state.current.id, false);
+                // 153: 유튜브가 플레이어가 놓인 사이트를 확인 못 함. 영상 탓이 아니니 플레이어를 새로 만들어 한 번만 다시 시도
+                if (e.data === 153 && state.current && !state.rebuilt153) {
+                    state.rebuilt153 = true;
+                    const cur = state.current;
+                    destroyPlayer();
+                    ensurePlayer(cur.id).catch((err) => setStatus(err.message, 'error'));
+                    return;
+                }
+                const blockedErr = [100, 101, 150, 153].includes(e.data);
+                // 권리자가 막은 영상(101·150)·삭제(100)는 이 기기에서 막힌 것으로 기억 (다른 기기에선 될 수도 있음)
+                if (state.current && blockedErr) rememberDeviceBlocked(state.current.id);
                 if (state.altTry && blockedErr) {
                     // 대체 영상도 막힘 → 다음 후보
                     state.altTry.i++;
@@ -756,6 +852,7 @@ async function playTrack(track, { pushBack = true, alt = false } = {}) {
         } else {
             state.player.loadVideoById(track.id);
         }
+        armTapHint(track.id);
     } catch (e) {
         setStatus(e.message, 'error');
         notify('error', e.message);
@@ -782,7 +879,7 @@ function songOf(t) {
 function altScore(song, v, origId) {
     if (v.id === origId) return null;
     const s = S();
-    if (s.embedOk[v.id] === false || (s.avoidAi && s.aiVideo[v.id]) || channelBlocked(v) || isFree(v)) return null;
+    if (isBlockedHere(v.id) || (s.avoidAi && s.aiVideo[v.id]) || channelBlocked(v) || isFree(v)) return null;
     const t = norm(song.title), a = norm(song.artist), vt = norm(v.title), vc = norm(v.channel);
     const titleOk = t && (vt.includes(t) || t.split(' ').filter((w) => w.length > 1 && vt.includes(w)).length >= Math.ceil(t.split(' ').length * 0.7));
     if (!titleOk) return null;
@@ -946,7 +1043,7 @@ const NO_AI_RE = /\b(no|not|without|zero)\s+AI\b|AI\s*(미사용|없이|사용\s
 // 반환: { ok: 재생해도 되는지, why: '' | 'embed' | 'ai' }
 async function inspectVideo(id, channel = '') {
     const s = S();
-    if (s.embedOk[id] === false) return { ok: false, why: 'embed' };
+    if (isBlockedHere(id)) return { ok: false, why: 'embed' };
     if (s.avoidAi && s.aiVideo[id] === true) return { ok: false, why: 'ai' };
     if (s.embedOk[id] === true && (!s.avoidAi || s.aiVideo[id] === false)) return { ok: true, why: '' };
     try {
@@ -1072,6 +1169,42 @@ async function next(auto = false) {
         }
     }
     if (!auto) notify('info', '다음 곡이 없어요');
+}
+
+async function onEnded() {
+    const s = S();
+    if (state.pendingNew) {
+        const p = state.pendingNew;
+        state.pendingNew = null;
+        setQueue(p.items, 0, p.label);
+        return;
+    }
+    if (s.repeat === 'one' && state.current) {
+        try { state.player.seekTo(0, true); state.player.playVideo(); } catch { /* */ }
+        return;
+    }
+    if (s.repeat === 'liked') {
+        const list = chatLikes().length ? chatLikes() : s.saved;
+        if (list.length) {
+            const at = list.findIndex((t) => t.id === state.current?.id);
+            const nxt = list[(at + 1) % list.length];
+            state.queue = list.map(trackLite);
+            state.queueIndex = (at + 1) % list.length;
+            state.queueLabel = '좋아요 곡 반복';
+            playTrack(nxt);
+            return;
+        }
+    }
+    next(true);
+}
+
+function cycleRepeat() {
+    const order = ['off', 'one', 'liked'];
+    const s = S();
+    s.repeat = order[(order.indexOf(s.repeat) + 1) % order.length];
+    save();
+    notify('info', { off: '반복 끔', one: '한 곡 반복', liked: '좋아요 곡만 반복' }[s.repeat]);
+    renderControls();
 }
 
 function prev() {
@@ -1227,7 +1360,7 @@ ${d.reason ? `<p class="sbgm-why-reason">${esc(d.reason)}</p>` : ''}
 </dl>
 ${d.songs?.length ? `<div class="sbgm-why-songs"><div>추천 곡</div><ol>${d.songs.map((x) => {
         const found = !d.found || d.found.includes(x);
-        const blocked = found && x.videoId && S().embedOk[x.videoId] === false;
+        const blocked = found && x.videoId && isBlockedHere(x.videoId);
         const aiHit = found && x.videoId && S().aiVideo[x.videoId] === true;
         const note = !found ? (x.skip || '유튜브에서 못 찾음') : blocked ? '외부 재생 막힘' : aiHit ? 'AI 생성 곡이라 건너뜀' : '';
         return `<li class="${note ? 'miss' : ''}">${esc([x.artist, x.title].filter(Boolean).join(' – '))}${note ? ` <small>(${note})</small>` : ''}</li>`;
@@ -1279,6 +1412,7 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_next" title="다음 곡"><i class="fa-solid fa-forward-step"></i></button>
     <button class="sbgm-icon" id="sbgm_reroll" title="이 곡 말고 새로 고르기"><i class="fa-solid fa-arrows-rotate"></i></button>
     <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)" aria-pressed="false">${heartSvg(false)}</button>
+    <button class="sbgm-icon" id="sbgm_repeat" title="반복"><i class="fa-solid fa-repeat"></i></button>
     <span class="sbgm-block-wrap"><button class="sbgm-icon" id="sbgm_block" title="다시 안 듣기 (곡 / 채널)"><i class="fa-solid fa-ban"></i></button><div class="sbgm-block-menu" id="sbgm_block_menu"></div></span>
     <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
   </div>
@@ -1422,6 +1556,9 @@ function bindWindow() {
     });
     $('#sbgm_save').on('click', () => state.current && toggleLike(state.current));
     $('#sbgm_reroll').on('click', reroll);
+    $('#sbgm_repeat').on('click', cycleRepeat);
+    $('#sbgm_list').on('keydown', '#sbgm_direct', function (e) { if (e.key === 'Enter') { if (playDirect(this.value)) this.value = ''; } });
+    $('#sbgm_list').on('click', '#sbgm_direct_go', function () { const el = document.getElementById('sbgm_direct'); if (playDirect(el.value)) el.value = ''; });
     $('#sbgm_block').on('click', (e) => {
         e.stopPropagation();
         if (!state.current) return;
@@ -1621,6 +1758,8 @@ function renderList() {
     keepScroll(renderListInner);
 }
 function renderListInner() {
+    const d = document.getElementById('sbgm_direct');
+    if (d) state.directDraft = d.value;
     const tab = S().window.tab;
     const list = listFor(tab);
     const $l = $('#sbgm_list');
@@ -1631,7 +1770,7 @@ function renderListInner() {
         history: '들은 곡이 여기에 남아요',
         saved: S().window.likeScope === 'all' ? '아직 좋아요한 곡이 없어요' : '♡를 누르면 이 채팅에 기록돼요',
     }[tab];
-    let label = tab === 'queue' && state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : '';
+    let label = tab === 'queue' ? `<div class="sbgm-direct"><input type="text" id="sbgm_direct" placeholder="유튜브 주소 붙여넣기 → Enter" value="${esc(state.directDraft || '')}"><button id="sbgm_direct_go" title="틀기"><i class="fa-solid fa-play"></i></button></div>${state.queueLabel ? `<div class="sbgm-list-label">${esc(state.queueLabel)}</div>` : ''}` : '';
     if (tab === 'saved') {
         const sc = S().window.likeScope;
         label = `<div class="sbgm-scope"><button data-scope="chat" class="${sc !== 'all' ? 'sbgm-sel' : ''}">이 채팅${charDisplayName() ? ` · ${esc(charDisplayName())}` : ''}</button><button data-scope="all" class="${sc === 'all' ? 'sbgm-sel' : ''}">전체</button></div>`;
@@ -1685,6 +1824,10 @@ function renderNow() {
         $('#sbgm_channel').text(S().enabled ? '대화가 이어지면 분위기에 맞춰 골라요' : '꺼져 있어요');
     }
     $win.toggleClass('sbgm-busy', state.busy);
+    if (state.needTap && !state.isPlaying) {
+        $('#sbgm_video').find('.sbgm-tap').remove();
+        $('#sbgm_video').append(`<div class="sbgm-tap">${IS_IOS ? '영상을 눌러 재생' : '▶를 눌러 재생'}</div>`);
+    } else $('#sbgm_video .sbgm-tap').remove();
     setStatus(statusText, statusKind);
 }
 
@@ -1706,6 +1849,12 @@ function renderControls() {
     $('#sbgm_save').html(heartSvg(!!saved)).attr('aria-pressed', String(!!saved)).attr('title', saved ? '좋아요 취소' : '좋아요 (이 채팅에 기록)');
     $('#sbgm_quick').toggleClass('sbgm-quick-playing', state.isPlaying).attr('title', state.isPlaying && state.current ? `Scene BGM · ${state.current.title}` : 'Scene BGM');
     $('#sbgm_vol').val(S().volume)[0]?.style.setProperty('--p', `${S().volume}%`);
+    const rep = S().repeat;
+    $('#sbgm_repeat').toggleClass('on', rep !== 'off').attr('title', { off: '반복 끔 (누르면 한 곡 반복)', one: '한 곡 반복 (누르면 좋아요 곡 반복)', liked: '좋아요 곡만 반복 (누르면 끔)' }[rep])
+        .find('i').attr('class', `fa-solid ${rep === 'liked' ? 'fa-heart-circle-check' : 'fa-repeat'}`);
+    $('#sbgm_repeat_badge').remove();
+    if (rep === 'one') $('#sbgm_repeat').append('<span id="sbgm_repeat_badge">1</span>');
+    $('#sbgm_play').toggleClass('sbgm-need-tap', state.needTap);
 }
 
 // 다시 그릴 때 스크롤 위치가 튀지 않게
@@ -1751,6 +1900,7 @@ function tick() {
 
 function setEnabled(on) {
     S().enabled = on;
+    setTimeout(() => { updateInjection(); scheduleCards(); }, 0);
     if (!on) { pause(); state.suggestion = null; setStatus('꺼짐'); } else setStatus('켜짐');
     save();
     renderAll();
@@ -1800,6 +1950,19 @@ function buildSettingsPanel() {
         <label>판단 최대 토큰 <input type="number" class="text_pole" id="sbgm_s_tokens" min="100" max="8000" step="50"></label>
       </div>
       <small class="sbgm-note">추론(thinking) 모델은 토큰을 많이 써서 답이 비어 올 수 있어요. 그럴 땐 최대 토큰을 1500 이상으로.</small>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_switchend"> 자동으로 새 곡이 정해지면 듣던 곡이 끝난 뒤에 바꾸기</label>
+
+      <h4>곡 카드</h4>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_card"> AI 답장에 곡 카드 넣기</label>
+      <small class="sbgm-note">답장을 쓰는 메인 모델이 답장 끝에 곡 하나를 적고, 그 메시지 위에 카드가 붙어요. 판단 호출이 따로 안 들어서 비용이 없고, 이야기를 쓰는 모델이 고르니 장면 이해가 가장 정확해요. 카드가 붙은 답장은 판단 프로필을 부르지 않아요.</small>
+      <div class="sbgm-s-grid">
+        <label>답장 몇 개마다 카드 <input type="number" class="text_pole" id="sbgm_s_cardevery" min="1" max="99"></label>
+      </div>
+      <label for="sbgm_s_cardstyle">카드 모양</label>
+      <select id="sbgm_s_cardstyle" class="text_pole"></select>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardauto"> 카드가 붙은 답장이 오면 바로 틀기 (추천 모드·'끝난 뒤 바꾸기'면 다음 곡으로)</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_cardpick"> 메시지의 🎵로 고른 곡을 그 메시지에 카드로 남기기</label>
+      <small class="sbgm-note">메시지의 ⋯ 메뉴에 🎵가 있어요. 누르면 그 메시지까지의 대화로 곡을 골라요(지나간 장면도 됨). 카드를 꾹 누르면(PC는 우클릭) 유튜브 열기·좋아요·지우기 메뉴가 떠요.</small>
 
       <h4>장르</h4>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_perchar"> <span id="sbgm_s_perchar_label">이 캐릭터만 장르 따로 저장</span></label>
@@ -1829,6 +1992,7 @@ function buildSettingsPanel() {
       <div class="sbgm-s-row">
         <div class="menu_button" id="sbgm_s_clear_ai"><i class="fa-solid fa-robot"></i> AI 채널 기억 비우기 (<span id="sbgm_s_ai_n">0</span>)</div>
         <div class="menu_button" id="sbgm_s_clear_ch"><i class="fa-solid fa-user-slash"></i> 막은 채널 비우기 (<span id="sbgm_s_ch_n">0</span>)</div>
+        <div class="menu_button" id="sbgm_s_clear_dev"><i class="fa-solid fa-mobile-screen"></i> 이 기기에서 막힌 영상 기억 비우기 (<span id="sbgm_s_dev_n">0</span>)</div>
       </div>
       <label for="sbgm_s_sort">고르는 순서</label>
       <select id="sbgm_s_sort" class="text_pole">
@@ -1900,6 +2064,13 @@ function buildSettingsPanel() {
     $('#sbgm_s_alt').on('change', function () { S().tryAlternates = this.checked; save(); });
     $('#sbgm_s_clear_ai').on('click', () => { S().aiChannels = []; S().aiVideo = {}; save(); syncSettingsPanel(); });
     $('#sbgm_s_clear_ch').on('click', () => { S().blockedChannels = []; save(); syncSettingsPanel(); });
+    $('#sbgm_s_clear_dev').on('click', () => { clearDeviceBlocked(); S().embedOk = {}; save(); syncSettingsPanel(); notify('success', '막힌 영상 기억을 비웠어요'); });
+    $('#sbgm_s_switchend').on('change', function () { S().switchAtEnd = this.checked; save(); });
+    $('#sbgm_s_card').on('change', function () { S().card = this.checked; save(); updateInjection(); scheduleCards(); });
+    $('#sbgm_s_cardevery').on('change', function () { S().cardEvery = clampNum(this.value, 1, 99, 6); this.value = S().cardEvery; save(); updateInjection(); });
+    $('#sbgm_s_cardstyle').html(Object.entries(CARD_STYLES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')).on('change', function () { S().cardStyle = this.value; save(); scheduleCards(); });
+    $('#sbgm_s_cardauto').on('change', function () { S().cardAutoPlay = this.checked; save(); });
+    $('#sbgm_s_cardpick').on('change', function () { S().cardOnPick = this.checked; save(); });
 
     $('#sbgm_s_source').on('change', function () { S().searchSource = this.value; save(); syncSettingsPanel(); });
     $('#sbgm_s_key').on('input', function () { S().apiKey = this.value.trim(); save(); });
@@ -1959,6 +2130,13 @@ function syncSettingsPanel() {
     $('#sbgm_s_alt').prop('checked', s.tryAlternates);
     $('#sbgm_s_ai_n').text(s.aiChannels.length);
     $('#sbgm_s_ch_n').text(s.blockedChannels.length);
+    $('#sbgm_s_dev_n').text(deviceBlocked().length);
+    $('#sbgm_s_switchend').prop('checked', s.switchAtEnd);
+    $('#sbgm_s_card').prop('checked', s.card);
+    $('#sbgm_s_cardevery').val(s.cardEvery);
+    $('#sbgm_s_cardstyle').val(s.cardStyle);
+    $('#sbgm_s_cardauto').prop('checked', s.cardAutoPlay);
+    $('#sbgm_s_cardpick').prop('checked', s.cardOnPick);
     $('#sbgm_s_source').val(s.searchSource);
     $('#sbgm_s_key').val(s.apiKey).toggle(s.searchSource === 'api');
     $('#sbgm_s_source_note').html(s.searchSource === 'api'
@@ -1974,18 +2152,330 @@ function onAiMessage(messageId) {
     const msg = ctx().chat?.[messageId];
     if (!msg || msg.is_user || msg.is_system) return;
     state.aiSinceChange++;
-    if (s.mode === 'manual') return;
+    scheduleCards();
+    if (s.card) {
+        const tag = readTag(msg.mes);
+        if (tag) {
+            state.aiSinceChange = 0;
+            if (s.cardAutoPlay) autoPlayCard(messageId, tag);
+            return;
+        }
+    }
+    if (s.mode === 'manual' || s.repeat !== 'off') return;
     if (state.current && state.aiSinceChange < s.minGap && !state.chatSwitched) return;
     runDirector({ force: !state.current, source: 'auto' });
 }
 
+async function autoPlayCard(mesId, tag) {
+    const s = S();
+    if (!s.enabled) return;
+    setStatus(`카드 곡 찾는 중 · ${tag.title}`, 'busy');
+    const found = await resolveSongs([{ artist: tag.artist, title: tag.title }]);
+    if (!found.length) { setStatus(`"${tag.title}"을(를) 유튜브에서 못 찾았어요`, 'error'); return; }
+    const t = { ...found[0], reason: '답장에 적힌 곡', mood: '' };
+    const store = cardStore();
+    if (store) { store[mesId] = { artist: tag.artist, title: tag.title, vid: t.id, channel: t.channel }; ctx().saveMetadata?.(); }
+    if (state.current && state.isPlaying && (s.switchAtEnd || s.mode === 'suggest')) {
+        state.pendingNew = { items: [trackLite(t)], label: '답장에 적힌 곡' };
+        setStatus(`다음 곡부터 · ${t.title}`);
+    } else {
+        setQueue([t], 0, '답장에 적힌 곡');
+        setStatus(`답장에 적힌 곡 · ${t.title}`);
+    }
+    scheduleCards();
+}
+
 function onChatChanged() {
+    state.pendingNew = null;
+    updateInjection();
+    scheduleCards();
     state.chatSwitched = !!state.current;
     state.aiSinceChange = S().minGap;
     state.suggestion = null;
     state.lastDecision = null;
     renderAll();
     syncSettingsPanel();
+}
+
+// ───────────────────────── 곡 카드 ─────────────────────────
+// 1) 설정을 켜면 답장을 쓰는 메인 모델이 답장 끝에 <bgm artist="…" title="…"> 한 줄을 적음 (판단 호출 없이 공짜)
+// 2) 메시지 🎵로 고른 곡은 채팅 메타데이터에 따로 저장 (본문은 안 건드림)
+// 카드는 그 메시지 본문 맨 위에 그려지고, 누르면 재생/일시정지
+const INJECT_KEY = 'sceneBgm_card';
+const CARD_STYLES = { pill: '알약', player: '미니 플레이어', line: '한 줄 글자', vinyl: 'LP판', bar: '진행 막대' };
+
+function cardDue(type) {
+    const every = Math.max(1, Number(S().cardEvery) || 1);
+    if (every <= 1) return true;
+    const chat = ctx().chat || [];
+    let end = chat.length - 1;
+    if (type === 'swipe' || type === 'regenerate') {
+        while (end >= 0 && (chat[end].is_user || chat[end].is_system)) end--;
+        end--;
+    }
+    let since = 0;
+    for (let i = end; i >= 0; i--) {
+        const m = chat[i];
+        if (!m || m.is_user || m.is_system) continue;
+        if (/<bgm\b/i.test(m.mes || '')) return since >= every - 1;
+        since++;
+    }
+    return true;
+}
+
+function updateInjection(type) {
+    const s = S();
+    let text = '';
+    if (s.enabled && s.card) {
+        if (!cardDue(typeof type === 'string' ? type : '')) {
+            text = '[Background music tag]\nDo not add a <bgm> tag to this reply.';
+        } else {
+            text = [
+                '[Background music tag]',
+                'At the very end of your reply, on its own final line, add exactly one tag naming a real, commercially released recording that underscores the feeling between the characters in this reply (not who they are, not their franchise):',
+                '<bgm artist="ARTIST" title="TITLE">',
+                genreRules().replace(/\n/g, ' '),
+                'Only name a song you are certain exists. Write the artist and title as on the official release, with no double quotes inside the values.',
+                'Do not repeat a song already tagged earlier in this chat. Write the tag once, and never mention or explain it in the story text.',
+            ].filter(Boolean).join('\n');
+        }
+    }
+    // 위치 1 = 채팅 안(깊이 0), 역할 0 = 시스템
+    ctx().setExtensionPrompt?.(INJECT_KEY, text, 1, 0, false, 0);
+}
+
+function readTag(text) {
+    let found = null;
+    for (const m of String(text ?? '').matchAll(/<bgm\b([^>]*)>/gi)) found = m[1];
+    if (found === null) return null;
+    const attrs = {};
+    for (const m of found.matchAll(/(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) attrs[m[1].toLowerCase()] = decodeHtml(m[2] ?? m[3] ?? '').trim();
+    if (!attrs.title) return null;
+    return { artist: attrs.artist || '', title: attrs.title };
+}
+
+function cardStore() {
+    const meta = ctx().chatMetadata;
+    if (!meta) return null;
+    meta.sceneBgm = meta.sceneBgm || {};
+    meta.sceneBgm.cards = meta.sceneBgm.cards || {};
+    return meta.sceneBgm.cards;
+}
+
+// 카드 저장: { artist, title, vid?, channel? }
+function attachCard(mesId, track) {
+    const store = cardStore();
+    if (!store) return;
+    store[mesId] = { artist: track.songArtist || '', title: track.songTitle || track.title, vid: track.id, channel: track.channel || '' };
+    ctx().saveMetadata?.();
+    scheduleCards();
+}
+
+function detachCard(mesId) {
+    const store = cardStore();
+    if (store && store[mesId]) { delete store[mesId]; ctx().saveMetadata?.(); }
+    const m = ctx().chat?.[mesId];
+    if (m && /<bgm\b/i.test(m.mes || '')) {
+        m.mes = m.mes.replace(/\s*<bgm\b[^>]*>\s*$/i, '').replace(/<bgm\b[^>]*>/gi, '');
+        ctx().saveChat?.();
+    }
+    scheduleCards();
+}
+
+// 메시지의 카드 정보: 저장된 것 → 본문 태그
+function cardOf(mesId) {
+    const store = cardStore();
+    if (store?.[mesId]) return store[mesId];
+    const m = ctx().chat?.[mesId];
+    if (!m || m.is_user) return null;
+    const tag = readTag(m.mes);
+    return tag ? { ...tag, vid: '' } : null;
+}
+
+// 카드의 곡이 지금 나오는 곡인지
+function cardIsCurrent(card) {
+    const c = state.current;
+    if (!c) return false;
+    if (card.vid) return c.id === card.vid;
+    return norm(c.songTitle || c.title).includes(norm(card.title)) && (!card.artist || norm(`${c.songArtist} ${c.channel} ${c.title}`).includes(norm(card.artist)));
+}
+
+async function playCard(mesId, card) {
+    if (cardIsCurrent(card)) { togglePlay(); return; }
+    if (card.vid) {
+        const t = { id: card.vid, title: card.title, channel: card.channel || card.artist, songArtist: card.artist, songTitle: card.title, reason: '곡 카드' };
+        insertAfterCurrent(trackLite(t));
+        state.queueIndex = Math.min(state.queueIndex + 1, state.queue.length - 1);
+        if (state.queueIndex < 0) state.queueIndex = 0;
+        playTrack(state.queue[state.queueIndex]);
+        return;
+    }
+    setStatus(`곡 찾는 중 · ${card.title}`, 'busy');
+    renderCards();
+    const found = await resolveSongs([{ artist: card.artist, title: card.title }]);
+    if (!found.length) { setStatus(`"${card.title}"을(를) 유튜브에서 못 찾았어요`, 'error'); renderCards(); return; }
+    const t = { ...found[0], reason: '곡 카드', mood: '' };
+    // 영상을 알았으니 카드에 적어 둠 (다음엔 검색 없이)
+    const store = cardStore();
+    if (store && !store[mesId]) { store[mesId] = { artist: card.artist, title: card.title, vid: t.id, channel: t.channel }; ctx().saveMetadata?.(); }
+    else if (store?.[mesId]) { store[mesId].vid = t.id; store[mesId].channel = t.channel; ctx().saveMetadata?.(); }
+    insertAfterCurrent(trackLite(t));
+    state.queueIndex = Math.min(state.queueIndex + 1, state.queue.length - 1);
+    if (state.queueIndex < 0) state.queueIndex = 0;
+    playTrack(state.queue[state.queueIndex]);
+}
+
+function cardHtml(mesId, card) {
+    const s = S();
+    const cur = cardIsCurrent(card);
+    const playing = cur && state.isPlaying;
+    const thumb = card.vid ? thumbOf(card.vid) : '';
+    const icon = `<i class="fa-solid ${playing ? 'fa-pause' : 'fa-play'}"></i>`;
+    const name = `<b>${esc(card.title)}</b><small>${esc(card.artist)}</small>`;
+    const eq = playing ? '<span class="sbgm-eq"><i></i><i></i><i></i></span>' : '';
+    const style = s.cardStyle;
+    let inner;
+    if (style === 'player') inner = `<span class="sbgm-card-art">${thumb ? `<img src="${thumb}" alt="">` : '<i class="fa-solid fa-music"></i>'}</span><span class="sbgm-card-text">${name}</span>${eq}<span class="sbgm-card-btn">${icon}</span>`;
+    else if (style === 'line') inner = `${icon}<span class="sbgm-card-text sbgm-card-inline">${name}</span>${eq}`;
+    else if (style === 'vinyl') inner = `<span class="sbgm-card-disc${playing ? ' spin' : ''}">${thumb ? `<img src="${thumb}" alt="">` : ''}</span><span class="sbgm-card-text">${name}</span><span class="sbgm-card-btn plain">${icon}</span>`;
+    else if (style === 'bar') inner = `<span class="sbgm-card-btn">${icon}</span><span class="sbgm-card-text">${name}</span>${eq}<span class="sbgm-card-prog"><span class="sbgm-card-t">0:00</span><span class="sbgm-card-track"><span class="sbgm-card-fill"></span></span><span class="sbgm-card-d">0:00</span></span>`;
+    else inner = `<span class="sbgm-card-btn">${icon}</span><span class="sbgm-card-text">${name}</span>${eq}`;
+    return `<div class="sbgm-card sbgm-card-${esc(style)}${cur ? ' sbgm-card-cur' : ''}${playing ? ' sbgm-card-playing' : ''}" data-mesid="${mesId}" title="${esc(card.artist ? `${card.artist} – ${card.title}` : card.title)}\n누르면 재생·일시정지, 꾹 누르면 메뉴">${inner}</div>`;
+}
+
+// "HTML 태그 표시"가 켜져 있으면 태그가 글자로 보이므로 지움
+function stripTagText(root) {
+    if (!root || !root.textContent.includes('bgm')) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) if (/<\/?bgm\b[^>]*>/i.test(node.nodeValue)) node.nodeValue = node.nodeValue.replace(/<\/?bgm\b[^>]*>/gi, '');
+    root.querySelectorAll('bgm').forEach((el) => el.remove());
+}
+
+function renderCards() {
+    document.querySelectorAll('#chat .mes').forEach((mes) => {
+        const id = Number(mes.getAttribute('mesid'));
+        const textEl = mes.querySelector('.mes_text');
+        if (!textEl || !Number.isInteger(id)) return;
+        stripTagText(textEl);
+        const card = S().enabled ? cardOf(id) : null;
+        const old = textEl.querySelector(':scope > .sbgm-card');
+        if (!card) { old?.remove(); return; }
+        const html = cardHtml(id, card);
+        if (old) { if (old.outerHTML !== html) old.outerHTML = html; } else textEl.insertAdjacentHTML('afterbegin', html);
+    });
+}
+function scheduleCards() {
+    clearTimeout(state.cardsTimer);
+    state.cardsTimer = setTimeout(renderCards, 60);
+}
+function renderCardProgress() {
+    if (!state.playerReady || !state.isPlaying) return;
+    const cards = document.querySelectorAll('.sbgm-card-bar.sbgm-card-cur');
+    if (!cards.length) return;
+    let cur = 0, dur = 0;
+    try { cur = state.player.getCurrentTime() || 0; dur = state.player.getDuration() || 0; } catch { return; }
+    cards.forEach((c) => {
+        c.querySelector('.sbgm-card-t').textContent = fmtTime(cur);
+        c.querySelector('.sbgm-card-d').textContent = fmtTime(dur);
+        c.querySelector('.sbgm-card-fill').style.width = `${dur ? (cur / dur) * 100 : 0}%`;
+    });
+}
+
+function openCardMenu(cardEl) {
+    closeCardMenu();
+    const mesId = Number(cardEl.dataset.mesid);
+    const card = cardOf(mesId);
+    if (!card) return;
+    const url = card.vid ? ytUrl(card.vid) : `https://www.youtube.com/results?search_query=${encodeURIComponent(`${card.artist} ${card.title}`)}`;
+    const menu = $(`<div class="sbgm-card-menu">
+<a href="${esc(url)}" target="_blank" rel="noopener"><i class="fa-brands fa-youtube"></i> 유튜브에서 열기</a>
+<button data-act="like"><i class="fa-regular fa-heart"></i> 좋아요</button>
+<button data-act="delete"><i class="fa-solid fa-trash"></i> 카드 지우기</button></div>`);
+    $('body').append(menu);
+    const r = cardEl.getBoundingClientRect();
+    menu.css({ left: Math.min(r.left, window.innerWidth - 200), top: r.bottom + 4 });
+    menu.on('click', 'button', function () {
+        const act = this.dataset.act;
+        closeCardMenu();
+        if (act === 'delete') detachCard(mesId);
+        if (act === 'like' && card.vid) toggleLike({ id: card.vid, title: card.title, channel: card.channel || card.artist });
+        else if (act === 'like') notify('info', '한 번 재생한 뒤에 좋아요할 수 있어요');
+    });
+    setTimeout(() => $(document).one('click.sbgmCardMenu', closeCardMenu), 0);
+}
+function closeCardMenu() { $('.sbgm-card-menu').remove(); $(document).off('click.sbgmCardMenu'); }
+
+function bindCards() {
+    let timer = 0, held = false;
+    $(document).on('pointerdown', '.sbgm-card', function (e) {
+        if (e.button) return;
+        held = false;
+        clearTimeout(timer);
+        timer = setTimeout(() => { held = true; openCardMenu(this); }, 500);
+    });
+    $(document).on('pointerup pointercancel pointerleave pointermove', '.sbgm-card', function (e) {
+        if (e.type === 'pointermove' && !held) return;
+        if (e.type !== 'pointermove') clearTimeout(timer);
+    });
+    $(document).on('contextmenu', '.sbgm-card', function (e) { e.preventDefault(); clearTimeout(timer); held = true; openCardMenu(this); });
+    $(document).on('click', '.sbgm-card', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        clearTimeout(timer);
+        if (held) { held = false; return; }
+        const mesId = Number(this.dataset.mesid);
+        const card = cardOf(mesId);
+        if (card) playCard(mesId, card);
+    });
+    // 메시지마다 🎵 (⋯ 메뉴 안): 그 메시지까지의 대화로 고르기
+    const BTN = '<div class="mes_button sbgm-mes-btn fa-solid fa-music interactable" title="이 메시지까지의 장면으로 곡 고르기" tabindex="0"></div>';
+    const addBtns = () => {
+        for (const box of [document.querySelector('#message_template .mes_buttons .extraMesButtons'), ...document.querySelectorAll('#chat .mes .mes_buttons .extraMesButtons')]) {
+            if (box && !box.querySelector('.sbgm-mes-btn')) box.insertAdjacentHTML('afterbegin', BTN);
+        }
+    };
+    addBtns();
+    state.addMesBtns = addBtns;
+    $(document).on('click', '.sbgm-mes-btn', function () {
+        if (!S().enabled) setEnabled(true);
+        if (state.busy) { notify('info', '지금 곡을 고르는 중이에요'); return; }
+        const id = Number(this.closest('.mes')?.getAttribute('mesid'));
+        runDirector({ force: true, source: 'manual', upTo: Number.isInteger(id) ? id : null });
+    });
+}
+
+// 주소로 직접 넣은 곡: 재생이 시작되면 플레이어가 알려 주는 제목·채널로 이름을 채움
+function nameDirectTrack() {
+    const cur = state.current;
+    if (!cur?.direct || cur.named) return;
+    const data = state.player?.getVideoData?.() || {};
+    if (!data.title) return;
+    cur.named = true;
+    cur.title = String(data.title);
+    cur.channel = String(data.author || '').replace(/\s-\sTopic$/i, '');
+    const s = S();
+    for (const list of [s.history, state.queue]) { const t = list.find((x) => x.id === cur.id); if (t) { t.title = cur.title; t.channel = cur.channel; } }
+    if (s.lastTrack?.id === cur.id) s.lastTrack = { ...s.lastTrack, title: cur.title, channel: cur.channel };
+    save();
+    renderAll();
+}
+
+function parseVideoId(text) {
+    const v = String(text ?? '').trim();
+    if (/^[\w-]{11}$/.test(v)) return v;
+    return v.match(/(?:youtu\.be\/|[?&]v=|\/(?:shorts|embed|live)\/)([\w-]{11})/)?.[1] || '';
+}
+
+function playDirect(text) {
+    const id = parseVideoId(text);
+    if (!id) { notify('warning', '유튜브 영상 주소를 알아보지 못했어요'); return false; }
+    const t = { id, title: '불러오는 중…', channel: '', direct: true, reason: '직접 넣음' };
+    insertAfterCurrent({ ...trackLite(t), direct: true });
+    state.queueIndex = Math.min(state.queueIndex + 1, state.queue.length - 1);
+    if (state.queueIndex < 0) state.queueIndex = 0;
+    playTrack(state.queue[state.queueIndex]);
+    return true;
 }
 
 function addQuickButton() {
@@ -2021,6 +2511,8 @@ function registerSlash() {
                 if (!v || v === 'find') runDirector({ force: true, source: 'manual' });
                 else if (v === 'next') next();
                 else if (v === 'reroll' || v === 'new') reroll();
+                else if (v === 'repeat') cycleRepeat();
+                else if (parseVideoId(v)) playDirect(v);
                 else if (v === 'prev') prev();
                 else if (v === 'toggle') togglePlay();
                 else if (v === 'on') setEnabled(true);
@@ -2053,6 +2545,15 @@ jQuery(async () => {
         c.eventSource.on(ev.MESSAGE_RECEIVED, onAiMessage);
         c.eventSource.on(ev.CHAT_CHANGED, onChatChanged);
         if (ev.CONNECTION_PROFILE_LOADED) c.eventSource.on(ev.CONNECTION_PROFILE_LOADED, fillProfiles);
+        if (ev.GENERATION_STARTED) c.eventSource.on(ev.GENERATION_STARTED, updateInjection);
+        for (const k of ['CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_SWIPED', 'MESSAGE_EDITED', 'MESSAGE_UPDATED', 'MESSAGE_DELETED', 'MORE_MESSAGES_LOADED']) {
+            if (ev[k]) c.eventSource.on(ev[k], () => { state.addMesBtns?.(); scheduleCards(); });
+        }
+        bindCards();
+        new MutationObserver(() => { state.addMesBtns?.(); scheduleCards(); }).observe(document.getElementById('chat'), { childList: true });
+        setInterval(renderCardProgress, 1000);
+        updateInjection();
+        scheduleCards();
         setInterval(tick, 500);
         globalThis.SceneBGM = { state, settings: S }; // 콘솔에서 상태 확인용
         renderAll();
