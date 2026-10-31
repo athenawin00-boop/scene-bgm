@@ -4,8 +4,16 @@
 
 ## 설치
 
+**주소로 설치 (간단)**: 실리태번 확장 메뉴 → **Install extension** → 아래 주소 붙여넣기
+
+```
+https://github.com/athenawin00-boop/scene-bgm
+```
+
+**직접 넣기**
+
 1. 실리태번을 끕니다.
-2. 이 폴더(`SillyTavern-SceneBGM`)를 통째로 아래 위치에 넣습니다.
+2. 이 저장소 폴더를 통째로 아래 위치에 넣습니다.
    - `SillyTavern/data/default-user/extensions/` (내 계정에만)
    - 또는 `SillyTavern/public/scripts/extensions/third-party/` (모든 계정)
 3. 실리태번을 켜고 새로고침. 오른쪽 위에 플레이어 창이 뜹니다.
