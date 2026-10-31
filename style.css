@@ -197,6 +197,35 @@
 .sbgm-why pre { white-space: pre-wrap; font: inherit; font-size: 11.5px; color: var(--sbgm-dim); margin: 4px 0 0; max-height: 180px; overflow-y: auto; }
 .sbgm-why-empty { color: var(--sbgm-dim); }
 .sbgm-why-songs { margin-top: 6px; }
+.sbgm-why-skip { margin-top: 6px; color: var(--sbgm-dim); font-size: 11.5px; }
+.sbgm-block-wrap { position: relative; display: inline-flex; }
+.sbgm-block-menu {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: -40px;
+    z-index: 5;
+    min-width: 200px;
+    padding: 4px;
+    background: var(--sbgm-solid-bg);
+    border: 1px solid var(--sbgm-border);
+    border-radius: 9px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+#sbgm_window .sbgm-block-menu button {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 7px 8px;
+    border-radius: 6px;
+    text-align: left;
+    font-size: 12.5px;
+    color: var(--sbgm-fg) !important;
+}
+#sbgm_window .sbgm-block-menu button:hover { background: var(--sbgm-hover) !important; }
+.sbgm-block-menu small { flex-basis: 100%; padding-left: 20px; color: var(--sbgm-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sbgm-why-songs > div { color: var(--sbgm-dim); }
 .sbgm-why-songs ol { margin: 2px 0 0; padding-left: 1.4em; }
 .sbgm-why-songs li { margin: 1px 0; }

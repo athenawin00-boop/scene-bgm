@@ -69,6 +69,10 @@ const DEFAULTS = {
     pickMode: 'songs', // songs: 실제 곡(아티스트·곡명) 추천 | mood: 분위기 검색
     avoidFree: true, // '무료 BGM / 저작권 없음' 영상 뒤로
     embedOk: {}, // 영상 id → 외부 재생 가능 여부 캐시
+    avoidAi: true, // AI 생성 음악 거르기
+    aiVideo: {}, // 영상 id → AI 표시 여부 캐시
+    aiChannels: [], // AI 음악으로 확인된 채널 (자동 학습)
+    blockedChannels: [], // 내가 막은 채널
     searchSource: 'st', // st | api
     apiKey: '',
     volume: 60,
@@ -98,6 +102,7 @@ const state = {
     suggestion: null, // {mood, reason, query, items}
     lastDecision: null, // {result, mood, query, reason, thinking, at, source}
     whyOpen: false,
+    skipped: {}, // 이번 판단에서 건너뛴 수 { embed, ai }
     aiSinceChange: 0,
     chatSwitched: false,
     busy: false,
@@ -326,7 +331,7 @@ function filterFresh(items) {
         const paid = items.filter((v) => !isFree(v));
         if (paid.length) items = [...paid, ...items.filter(isFree)];
     }
-    items = items.filter((v) => s.embedOk[v.id] !== false);
+    items = items.filter((v) => s.embedOk[v.id] !== false && !(s.avoidAi && s.aiVideo[v.id]) && !channelBlocked(v));
     const blocked = new Set(s.blocked);
     const recent = new Set(s.history.slice(0, 8).map((h) => h.id));
     if (state.current) recent.add(state.current.id);
@@ -336,6 +341,14 @@ function filterFresh(items) {
 
 const FREE_RE = /no\s*copyright|copyright[\s-]*free|royalty[\s-]*free|free\s*(bgm|music|download|to use)|non[\s-]*copyright|ncs\b|저작권\s*(없는|free|프리)|무료\s*(bgm|브금|음악)|무료브금|노카피|\bvlog\s*music/i;
 const isFree = (v) => FREE_RE.test(`${v.title} ${v.channel}`);
+const chKey = (c) => String(c || '').trim().toLowerCase();
+function channelBlocked(v) {
+    const s = S();
+    const k = chKey(v.channel);
+    if (!k) return false;
+    if (s.blockedChannels.includes(k)) return true;
+    return s.avoidAi && s.aiChannels.includes(k);
+}
 const norm = (t) => String(t || '').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 // 곡명 검색 결과 중 그 곡에 가장 가까운 영상 하나
@@ -345,10 +358,15 @@ function pickBestForSong(song, items) {
     items.forEach((v, i) => {
         const vt = norm(v.title), vc = norm(v.channel);
         let sc = -i * 0.6; // 검색 순위
-        if (t && vt.includes(t)) sc += 6;
-        else if (t && t.split(' ').filter((w) => w.length > 1 && vt.includes(w)).length >= Math.ceil(t.split(' ').length / 2)) sc += 3;
-        if (a && (vt.includes(a) || vc.includes(a))) sc += 4;
-        if (/ topic$/.test(vc) || /official|공식/.test(vc)) sc += 2;
+        const titleFull = t && vt.includes(t);
+        const titlePart = t && t.split(' ').filter((w) => w.length > 1 && vt.includes(w)).length >= Math.ceil(t.split(' ').length / 2);
+        const artistHit = a && (vt.includes(a) || vc.includes(a) || a.split(' ').filter((w) => w.length > 2).some((w) => vc.includes(w)));
+        const officialCh = / topic$/.test(vc) || /official|공식|vevo|records|music$/.test(vc);
+        // AI 채널이 같은 제목으로 올린 가짜 곡을 피하려고, 아티스트가 안 맞으면 공식 채널일 때만 인정
+        if (!(titleFull || titlePart) || (a && !artistHit && !officialCh)) return;
+        if (titleFull) sc += 6; else sc += 3;
+        if (artistHit) sc += 4;
+        if (officialCh) sc += 2;
         if (/official (audio|music video|mv)|\[mv\]|\bmv\b|audio/.test(vt)) sc += 1;
         if (/lyrics|가사|cover|커버|reaction|리액션|karaoke|노래방|tutorial|sheet|\bhour|시간|playlist|플레이리스트|mix\b|loop|1h/.test(vt)) sc -= 3;
         if (/live|라이브|concert|콘서트|fancam|직캠/.test(vt)) sc -= 1.5;
@@ -366,9 +384,14 @@ async function resolveSongs(songs) {
     const results = await Promise.all(songs.map(async (song) => {
         try {
             const q = [song.artist, song.title].filter(Boolean).join(' ');
-            const items = (await searchVideos(q)).filter((v) => !blocked.has(v.id) && S().embedOk[v.id] !== false);
-            const v = pickBestForSong(song, items);
-            return v ? { ...v, song } : null;
+            const all = (await searchVideos(q)).filter((v) => !blocked.has(v.id));
+            const usable = (v) => S().embedOk[v.id] !== false && !(S().avoidAi && S().aiVideo[v.id] === true) && !channelBlocked(v);
+            const v = pickBestForSong(song, all.filter(usable));
+            if (v) return { ...v, song };
+            // 왜 못 썼는지 표시용
+            const raw = pickBestForSong(song, all);
+            if (raw) song.skip = S().embedOk[raw.id] === false ? '외부 재생 막힘' : 'AI 생성 곡이라 건너뜀';
+            return null;
         } catch (e) {
             console.warn(LOG, 'song search failed', song, e);
             return null;
@@ -434,7 +457,7 @@ function collectScene() {
     }).join('\n\n');
 }
 
-function buildPrompt(force, reject = null) {
+function buildPrompt(force, reject = null, extra = '') {
     const recent = collectScene();
 
     const system = [
@@ -473,7 +496,7 @@ function buildPrompt(force, reject = null) {
         genreRules(),
         likedNote,
         playedNote,
-        cur + switched + rejectNote,
+        cur + switched + rejectNote + (extra ? `\n${extra}` : ''),
         '',
         '### Scene (oldest → newest)',
         recent || '(empty)',
@@ -503,10 +526,10 @@ function parseDecision(text) {
     throw new Error('판단 모델의 답을 읽지 못했어요 (JSON 형식이 아님)');
 }
 
-async function askDirector(force, reject = null) {
+async function askDirector(force, reject = null, extra = '') {
     const s = S();
     const c = ctx();
-    const { system, user } = buildPrompt(force || !!reject, reject);
+    const { system, user } = buildPrompt(force || !!reject, reject, extra);
     let text = '';
     let thinking = '';
     if (s.profileId) {
@@ -542,10 +565,14 @@ async function runDirector({ force = false, source = 'auto', reject = null } = {
     const s = S();
     if (state.busy) return;
     state.busy = true;
-    setStatus(reject ? '다른 곡으로 다시 고르는 중…' : '장면 분석 중…', 'busy');
+    state.skipped = {};
+    setStatus(reject ? '다른 곡으로 다시 고르는 중…' : source === 'continue' ? '이어서 들을 곡 고르는 중…' : '장면 분석 중…', 'busy');
     renderNow();
     try {
-        const d = await askDirector(force, reject);
+        const extra = source === 'continue'
+            ? 'The previous picks have finished playing and the scene has not changed much. Recommend 5 MORE songs in the same vein, all different from the recently played ones.'
+            : '';
+        const d = await askDirector(force, reject, extra);
         const record = (result) => {
             state.lastDecision = { result, mood: d.mood, query: d.query, reason: d.reason, thinking: d.thinking, songs: d.songs || [], found: d.found || null, at: Date.now(), source };
         };
@@ -584,13 +611,13 @@ async function runDirector({ force = false, source = 'auto', reject = null } = {
         state.chatSwitched = false;
         if (reject) items.splice(0, items.length, ...items.filter((v) => v.id !== reject.id));
         d.query = query;
-        if (s.mode === 'suggest' && source !== 'force-play' && !reject) {
+        if (s.mode === 'suggest' && source !== 'force-play' && source !== 'continue' && !reject) {
             record('suggest');
             state.suggestion = { mood: d.mood, reason: d.reason, query, items: tagged };
             setStatus(`추천 도착 · ${d.mood || query}`);
             notify('info', `새 분위기: ${d.mood || query}`);
         } else {
-            record(reject ? 'reroll' : 'change');
+            record(reject ? 'reroll' : source === 'continue' ? 'continue' : 'change');
             setQueue(tagged.filter((v) => !reject || v.id !== reject.id), 0, d.mood || query);
             setStatus(d.reason || d.mood || query);
         }
@@ -694,21 +721,41 @@ async function playTrack(track, { pushBack = true } = {}) {
     if (S().window.tab === 'related') loadRelated();
 }
 
-// 실리태번 서버로 영상 페이지를 열어 playableInEmbed를 확인. 확인 실패 시엔 일단 재생 시도
-async function checkEmbeddable(id) {
+// AI 음악 표시: 유튜브의 '콘텐츠 생성 방식(변경되었거나 합성된 콘텐츠)' 라벨, 또는 설명란의 AI 제작 문구
+const AI_DESC_RE = /\bAI[-\s]?(generated|made|created|composed|produced|music|based|assisted|tools?)\b|\b(created|made|produced|composed|generated)\s+(with|using|by)\s+(an?\s+)?(AI|artificial intelligence|suno|udio)\b|\bsuno(\s*ai)?\b|\budio\b|인공\s*지능|AI\s*(로|으로|를\s*활용해|를\s*이용해)?\s*(만든|제작|생성|작곡)|AI\s*(음악|작곡|커버|보컬)|생성형\s*AI/i;
+const NO_AI_RE = /\b(no|not|without|zero)\s+AI\b|AI\s*(미사용|없이|사용\s*안)|사람이\s*(직접\s*)?(연주|작곡)/i;
+
+// 실리태번 서버로 영상 페이지를 열어 외부 재생 가능 여부와 AI 표시를 함께 확인
+// 반환: { ok: 재생해도 되는지, why: '' | 'embed' | 'ai' }
+async function inspectVideo(id, channel = '') {
     const s = S();
-    if (s.embedOk[id] !== undefined) return s.embedOk[id];
+    if (s.embedOk[id] === false) return { ok: false, why: 'embed' };
+    if (s.avoidAi && s.aiVideo[id] === true) return { ok: false, why: 'ai' };
+    if (s.embedOk[id] === true && (!s.avoidAi || s.aiVideo[id] === false)) return { ok: true, why: '' };
     try {
         const html = await visit(ytUrl(id));
         const m = html.match(/"playableInEmbed"\s*:\s*(true|false)/);
         const st = html.match(/"playabilityStatus"\s*:\s*\{\s*"status"\s*:\s*"(\w+)"/);
-        if (!m && !st) return true;
-        const ok = m ? m[1] === 'true' : true;
-        const playable = !st || st[1] === 'OK';
-        rememberEmbed(id, ok && playable);
-        return ok && playable;
+        const embed = (m ? m[1] === 'true' : true) && (!st || st[1] === 'OK');
+        rememberEmbed(id, embed);
+        let desc = '';
+        const dm = html.match(/"shortDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+        if (dm) { try { desc = JSON.parse(`"${dm[1]}"`); } catch { desc = dm[1]; } }
+        const labeled = /"howThisWasMadeSectionViewModel"\s*:\s*\{/.test(html);
+        const ai = labeled || (AI_DESC_RE.test(desc) && !NO_AI_RE.test(desc));
+        s.aiVideo[id] = ai;
+        if (ai) {
+            const ch = chKey(channel || (html.match(/"ownerChannelName"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] ?? ''));
+            if (ch && !s.aiChannels.includes(ch)) s.aiChannels = [...s.aiChannels, ch].slice(-400);
+        }
+        const keys = Object.keys(s.aiVideo);
+        if (keys.length > 800) for (const k of keys.slice(0, keys.length - 800)) delete s.aiVideo[k];
+        save();
+        if (!embed) return { ok: false, why: 'embed' };
+        if (ai && s.avoidAi) return { ok: false, why: 'ai' };
+        return { ok: true, why: '' };
     } catch {
-        return true;
+        return { ok: true, why: '' };
     }
 }
 function rememberEmbed(id, ok) {
@@ -726,12 +773,13 @@ async function playFromQueue(index) {
     let tries = 0;
     for (let i = index; i < state.queue.length && tries < 6; tries++) {
         const t = state.queue[i];
-        const ok = await checkEmbeddable(t.id);
+        const { ok, why } = await inspectVideo(t.id, t.channel);
         if (seq !== playSeq) return true; // 그사이 다른 곡을 눌렀음
         if (!ok) {
-            // 외부 재생이 막힌 곡은 대기열에서 빼고 같은 자리의 다음 곡으로
+            // 외부 재생이 막혔거나 AI 생성 곡이면 대기열에서 빼고 같은 자리의 다음 곡으로
             state.queue.splice(i, 1);
-            console.log(LOG, 'skip (embed disabled)', t.title);
+            state.skipped[why] = (state.skipped[why] || 0) + 1;
+            console.log(LOG, `skip (${why})`, t.title, t.channel);
             renderList();
             continue;
         }
@@ -740,7 +788,7 @@ async function playFromQueue(index) {
             await playTrack(t);
             // 다음 곡도 미리 확인해 둠
             const nxt = state.queue[i + 1];
-            if (nxt) checkEmbeddable(nxt.id);
+            if (nxt) inspectVideo(nxt.id, nxt.channel);
             return true;
         }
     }
@@ -762,7 +810,13 @@ async function next(auto = false) {
         if (await playFromQueue(from)) return;
         state.queueIndex = state.queue.length - 1;
     }
-    // 대기열이 끝나면 비슷한 곡으로 이어가기
+    // 곡 추천 모드: 대기열이 끝나면 같은 장면으로 곡을 더 추천받음 (유튜브 추천 영상엔 AI 음악이 많음)
+    const s = S();
+    if (s.pickMode === 'songs' && s.enabled && s.mode !== 'manual' && !state.busy) {
+        runDirector({ force: true, source: 'continue' });
+        return;
+    }
+    // 그 밖엔 비슷한 곡으로 이어가기
     if (state.current) {
         try {
             setStatus('비슷한 곡 찾는 중…', 'busy');
@@ -851,9 +905,18 @@ function reroll() {
     runDirector({ force: true, source: 'reroll', reject: state.current });
 }
 
-function blockCurrent() {
+function blockCurrent(scope = 'song') {
     const s = S();
     if (!state.current) return;
+    if (scope === 'channel' && state.current.channel) {
+        const k = chKey(state.current.channel);
+        if (!s.blockedChannels.includes(k)) s.blockedChannels = [...s.blockedChannels, k].slice(-500);
+        save();
+        notify('info', `"${state.current.channel}" 채널은 다시 고르지 않아요`);
+        state.queue = state.queue.filter((t, i) => i <= state.queueIndex || chKey(t.channel) !== k);
+        next();
+        return;
+    }
     if (!s.blocked.includes(state.current.id)) s.blocked.push(state.current.id);
     s.blocked = s.blocked.slice(-500);
     save();
@@ -907,7 +970,7 @@ function updateMarquee(el) {
     }
 }
 
-const RESULT_LABEL = { change: '교체', keep: '유지', suggest: '추천', reroll: '새로 고르기' };
+const RESULT_LABEL = { change: '교체', keep: '유지', suggest: '추천', reroll: '새로 고르기', continue: '이어서' };
 function renderWhy() {
     const $w = $('#sbgm_why');
     if (!state.whyOpen) { $w.hide().empty(); return; }
@@ -924,9 +987,11 @@ ${d.reason ? `<p class="sbgm-why-reason">${esc(d.reason)}</p>` : ''}
 ${d.songs?.length ? `<div class="sbgm-why-songs"><div>추천 곡</div><ol>${d.songs.map((x) => {
         const found = !d.found || d.found.includes(x);
         const blocked = found && x.videoId && S().embedOk[x.videoId] === false;
-        const note = !found ? '유튜브에서 못 찾음' : blocked ? '외부 재생 막힘' : '';
+        const aiHit = found && x.videoId && S().aiVideo[x.videoId] === true;
+        const note = !found ? (x.skip || '유튜브에서 못 찾음') : blocked ? '외부 재생 막힘' : aiHit ? 'AI 생성 곡이라 건너뜀' : '';
         return `<li class="${note ? 'miss' : ''}">${esc([x.artist, x.title].filter(Boolean).join(' – '))}${note ? ` <small>(${note})</small>` : ''}</li>`;
     }).join('')}</ol></div>` : ''}
+${(state.skipped.ai || state.skipped.embed) ? `<div class="sbgm-why-skip">건너뜀: ${[state.skipped.ai ? `AI 생성 ${state.skipped.ai}곡` : '', state.skipped.embed ? `외부 재생 막힘 ${state.skipped.embed}곡` : ''].filter(Boolean).join(', ')}</div>` : ''}
 ${d.thinking ? `<details><summary>모델의 생각 보기</summary><pre>${esc(d.thinking)}</pre></details>` : ''}`).show();
 }
 
@@ -971,7 +1036,7 @@ function buildWindow() {
     <button class="sbgm-icon" id="sbgm_next" title="다음 곡"><i class="fa-solid fa-forward-step"></i></button>
     <button class="sbgm-icon" id="sbgm_reroll" title="이 곡 말고 새로 고르기"><i class="fa-solid fa-arrows-rotate"></i></button>
     <button class="sbgm-icon" id="sbgm_save" title="좋아요 (이 채팅에 기록)" aria-pressed="false">${heartSvg(false)}</button>
-    <button class="sbgm-icon" id="sbgm_block" title="이 곡 다시 안 듣기"><i class="fa-solid fa-ban"></i></button>
+    <span class="sbgm-block-wrap"><button class="sbgm-icon" id="sbgm_block" title="다시 안 듣기 (곡 / 채널)"><i class="fa-solid fa-ban"></i></button><div class="sbgm-block-menu" id="sbgm_block_menu"></div></span>
     <div class="sbgm-vol" title="볼륨"><i class="fa-solid fa-volume-low"></i><input type="range" id="sbgm_vol" min="0" max="100" aria-label="볼륨"></div>
   </div>
 
@@ -1113,7 +1178,20 @@ function bindWindow() {
     });
     $('#sbgm_save').on('click', () => state.current && toggleLike(state.current));
     $('#sbgm_reroll').on('click', reroll);
-    $('#sbgm_block').on('click', blockCurrent);
+    $('#sbgm_block').on('click', (e) => {
+        e.stopPropagation();
+        if (!state.current) return;
+        const $m = $('#sbgm_block_menu');
+        if ($m.is(':visible')) { $m.hide(); return; }
+        $m.html(`<button data-scope="song"><i class="fa-solid fa-ban"></i> 이 곡 다시 안 듣기</button>
+            <button data-scope="channel"><i class="fa-solid fa-user-slash"></i> 이 채널 전체 안 듣기<small>${esc(state.current.channel || '')}</small></button>`).show();
+    });
+    $('#sbgm_block_menu').on('click', 'button', function (e) {
+        e.stopPropagation();
+        $('#sbgm_block_menu').hide();
+        blockCurrent(this.dataset.scope);
+    });
+    $(document).on('click', () => $('#sbgm_block_menu').hide());
 
     $('#sbgm_vol').on('input', function () {
         S().volume = Number(this.value);
@@ -1420,6 +1498,11 @@ function buildSettingsPanel() {
         <option value="mood">분위기 검색 — 분위기 검색어로 찾아요 (BGM 모음 위주)</option>
       </select>
       <label class="checkbox_label"><input type="checkbox" id="sbgm_s_free"> '무료 BGM·저작권 없음' 영상은 뒤로</label>
+      <label class="checkbox_label"><input type="checkbox" id="sbgm_s_ai"> AI 생성 음악 거르기 (유튜브 'AI·합성 콘텐츠' 표시, 설명란의 AI 제작 문구)</label>
+      <div class="sbgm-s-row">
+        <div class="menu_button" id="sbgm_s_clear_ai"><i class="fa-solid fa-robot"></i> AI 채널 기억 비우기 (<span id="sbgm_s_ai_n">0</span>)</div>
+        <div class="menu_button" id="sbgm_s_clear_ch"><i class="fa-solid fa-user-slash"></i> 막은 채널 비우기 (<span id="sbgm_s_ch_n">0</span>)</div>
+      </div>
       <label for="sbgm_s_sort">고르는 순서</label>
       <select id="sbgm_s_sort" class="text_pole">
         <option value="views">조회수 높은 순 (검색 결과 안에서)</option>
@@ -1484,6 +1567,9 @@ function buildSettingsPanel() {
     $('#sbgm_s_sort').on('change', function () { S().sortBy = this.value; save(); });
     $('#sbgm_s_pick').on('change', function () { S().pickMode = this.value; save(); });
     $('#sbgm_s_free').on('change', function () { S().avoidFree = this.checked; save(); });
+    $('#sbgm_s_ai').on('change', function () { S().avoidAi = this.checked; save(); });
+    $('#sbgm_s_clear_ai').on('click', () => { S().aiChannels = []; S().aiVideo = {}; save(); syncSettingsPanel(); });
+    $('#sbgm_s_clear_ch').on('click', () => { S().blockedChannels = []; save(); syncSettingsPanel(); });
 
     $('#sbgm_s_source').on('change', function () { S().searchSource = this.value; save(); syncSettingsPanel(); });
     $('#sbgm_s_key').on('input', function () { S().apiKey = this.value.trim(); save(); });
@@ -1537,6 +1623,9 @@ function syncSettingsPanel() {
     $('#sbgm_s_sort').val(s.sortBy);
     $('#sbgm_s_pick').val(s.pickMode);
     $('#sbgm_s_free').prop('checked', s.avoidFree);
+    $('#sbgm_s_ai').prop('checked', s.avoidAi);
+    $('#sbgm_s_ai_n').text(s.aiChannels.length);
+    $('#sbgm_s_ch_n').text(s.blockedChannels.length);
     $('#sbgm_s_source').val(s.searchSource);
     $('#sbgm_s_key').val(s.apiKey).toggle(s.searchSource === 'api');
     $('#sbgm_s_source_note').html(s.searchSource === 'api'
